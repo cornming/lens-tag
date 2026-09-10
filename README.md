@@ -15,23 +15,40 @@
    讓使用者自訂顯示名稱／語言，之後同類物件直接查表顯示
 5. **AR 疊加顯示** — Compose Canvas 疊在相機預覽上畫框＋文字
 
-## 目前狀態（第一版骨架）
+## 目前狀態
 
 已經動的部分：
-- CameraX 預覽 + ML Kit Object Detection & Tracking，能拿到框位置和追蹤 ID
-- `ObjectRecognizer`：接上 ML Kit GenAI Prompt API 的 `checkStatus()` /
-  `download()` / `generateContent()` 標準流程
-- `CameraScreen` 裡已經有「新追蹤 ID 才觸發辨識」的快取骨架
+- CameraX 預覽 + ML Kit Object Detection & Tracking，拿到框位置和追蹤 ID
+- 分析影像座標 -> 螢幕座標換算（FILL_CENTER 等比放大置中），框會對齊預覽畫面
+- 物件穩定度判斷：框連續 5 影格位移都很小才觸發辨識
+- 從當前影格依偵測框裁切 Bitmap，丟給 Gemini Nano 辨識
+- 標籤三種狀態：Unknown（灰、顯示「?」）、Recognizing（黃、顯示「…」）、Named（綠、顯示名稱）
+- 點擊任一個框可以手動命名
+- 框消失後保留 500ms 寬限期，避免遮擋造成標籤閃爍
 
-還沒做、下一步要接的：
-- **裁切 Bitmap**：目前辨識觸發點還是空的，要從 `ImageProxy` 依偵測框裁出
-  該物件的 Bitmap 再丟給 `ObjectRecognizer.recognize()`（建議接在
-  `ObjectAnalyzer` 那層，原始影格還在那裡）
-- **座標換算**：Canvas 疊加框目前直接用 ML Kit 回傳的分析影像座標畫，還沒
-  對齊 `PreviewView` 實際顯示的縮放/裁切，框的位置在大多數機型上會偏移
-- **自訂名稱／翻譯的本地儲存**：目前辨識出文字後還沒有查表/存表的邏輯，
-  也還沒有讓使用者輸入自訂名稱的畫面
+還沒做：
+- **本地儲存**：自訂名稱目前只存在記憶體，關掉 App 就沒了。要接 Room，
+  存「辨識文字 -> 自訂顯示名稱 -> 翻譯」的對照表
+- **翻譯**：還沒接。可以用 ML Kit 裝置端 Translation API（離線可用），
+  或直接讓 Gemini Nano 順便生成
+- **多次觀測取共識**：目前單次辨識就定案，還沒做多角度投票
 - 沒有 app icon
+
+## 設計原則（借自 Tesla Vision）
+
+Tesla 從純相機系統學到的教訓是：傳統物件偵測只認得訓練資料裡的類別，
+看到不在資料集裡的東西就等於什麼都沒看到（他們稱為 ontology cracks），
+所以解法是「幾何優先於分類」——先確認那裡有東西，再問那是什麼。
+這個專案套用了其中三點：
+
+1. **框先於名稱**：`ObjectAnalyzer` 只負責「有沒有東西、在哪裡」，完全不管類別。
+   `LabelState.Unknown` 是合法狀態，辨識失敗或裝置不支援 Gemini Nano 時，
+   框照樣畫、可以手動命名，功能不會整個掛掉。
+2. **靜止才辨識**：借用 Tesla 區分靜止/移動物件的概念，用框中心的位移量判斷
+   物件是否穩定，穩定才觸發辨識。同時解決裁切品質、AICore quota 節流、
+   以及「辨識到一半物件跑掉」三個問題。
+3. **時間上的寬限期**：Tesla 融合 t-1、t-2 的資料處理遮擋；這裡的簡化版是
+   框消失後保留 500ms 再移除，避免標籤閃爍。
 
 ## 自動建置與發版
 

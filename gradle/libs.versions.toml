@@ -1,6 +1,6 @@
 [versions]
 # 以下版本號截至 2026-09 有實際查證過
-agp = "9.0.1"
+agp = "9.4.0"
 kotlin = "2.4.20"
 cameraX = "1.6.1"
 composeUi = "1.11.4"
