@@ -42,7 +42,7 @@ jobs:
           VERSION_NAME: ${{ steps.version.outputs.name }}
         run: |
           set -o pipefail
-          gradle assembleDebug --stacktrace 2>&1 | tee /tmp/build.log
+          gradle assembleDebug 2>&1 | tee /tmp/build.log
 
       # 建置失敗時把 log 尾段開成 issue，方便在沙箱裡透過 API 讀到錯誤原因
       - name: Report build failure
@@ -50,9 +50,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # 濾掉 stack trace 的 "at ..." 行，否則真正的錯誤訊息會被洗掉
+          grep -v $'^\tat ' /tmp/build.log \
+            | grep -v '^Caused by: org.gradle' \
+            | tail -c 6000 > /tmp/filtered.log
           {
             echo '```'
-            tail -c 8000 /tmp/build.log
+            cat /tmp/filtered.log
             echo '```'
           } > /tmp/issue-body.md
           gh issue create \
