@@ -71,6 +71,13 @@ class ObjectAnalyzer(
         val rotation = imageProxy.imageInfo.rotationDegrees
         val image = InputImage.fromMediaImage(mediaImage, rotation)
 
+        // ML Kit 回傳的 boundingBox 是「旋轉後」的座標系，但 imageProxy 的
+        // width/height 是原始 buffer（未旋轉）的尺寸。手機直立時 rotation 通常是
+        // 90 度，寬高剛好顛倒——這裡不交換的話，UI 換算出來的框位置就會整個歪掉。
+        val quarterTurned = rotation == 90 || rotation == 270
+        val sourceWidth = if (quarterTurned) imageProxy.height else imageProxy.width
+        val sourceHeight = if (quarterTurned) imageProxy.width else imageProxy.height
+
         detector.process(image)
             .addOnSuccessListener { objects ->
                 val boxes = objects.mapNotNull { obj ->
@@ -82,8 +89,8 @@ class ObjectAnalyzer(
                 onDetected(
                     DetectionResult(
                         boxes = boxes,
-                        sourceWidth = image.width,
-                        sourceHeight = image.height,
+                        sourceWidth = sourceWidth,
+                        sourceHeight = sourceHeight,
                     ),
                 )
 

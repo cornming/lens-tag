@@ -11,9 +11,15 @@ import com.google.mlkit.genai.prompt.generateContentRequest
 
 private const val TAG = "ObjectRecognizer"
 
+/** 一次辨識結果：原文名稱（繁體中文）+ 翻譯名稱（可能沒有，視 Gemini Nano 回覆而定）。 */
+data class RecognizedLabel(
+    val primary: String,
+    val secondary: String?,
+)
+
 /**
  * 用 ML Kit GenAI Prompt API（裝置端 Gemini Nano）做開放詞彙的物件辨識——
- * 也就是專案討論裡選定的「路線二」。
+ * 專案討論裡選定的「路線二」。
  *
  * 注意：這個 API 目前只在有 AICore 支援的機型（Tensor / 部分 Snapdragon /
  * 部分 Dimensity）能用，而且不支援解鎖過 bootloader 的裝置，呼叫前一定要
@@ -68,23 +74,42 @@ class ObjectRecognizer {
     }
 
     /**
-     * 把裁切好的單一物件圖片丟給 Gemini Nano，回傳簡短的物件名稱文字（例如「門」）。
-     * 失敗或辨識不出來回傳 null。
+     * 把裁切好的單一物件圖片丟給 Gemini Nano，同時要求繁體中文原文名稱和
+     * [secondaryLanguage] 的翻譯名稱，用「原文|翻譯」的格式回覆再拆開。
+     *
+     * 失敗或辨識不出來回傳 null；如果拆不出翻譯（模型沒照格式回，或
+     * secondaryLanguage 為 null），secondary 會是 null，畫面上就只顯示原文。
      *
      * 呼叫端（CameraScreen）負責依追蹤 ID 做快取，同一個物件不要重複呼叫這個函式。
      */
-    suspend fun recognize(objectBitmap: Bitmap): String? {
+    suspend fun recognize(objectBitmap: Bitmap, secondaryLanguage: String?): RecognizedLabel? {
+        val prompt = if (secondaryLanguage.isNullOrBlank()) {
+            "這張圖片中央的物體是什麼？只回答物體名稱本身，不要句子，不要標點符號。"
+        } else {
+            "這張圖片中央的物體是什麼？用「繁體中文名稱|${secondaryLanguage}名稱」的格式回答，" +
+                "例如「門|door」，只回答這個格式，不要其他文字。"
+        }
+
         return try {
             val response = generativeModel.generateContent(
                 generateContentRequest(
                     ImagePart(objectBitmap),
-                    TextPart("這張圖片中央的物體是什麼？只回答物體名稱本身，不要句子，不要標點符號。"),
+                    TextPart(prompt),
                 ) {
                     temperature = 0.1f
-                    maxOutputTokens = 16
+                    maxOutputTokens = 32
                 },
             )
-            response.candidates.firstOrNull()?.text?.trim()
+
+            val raw = response.candidates.firstOrNull()?.text?.trim()
+            if (raw.isNullOrBlank()) return null
+
+            val parts = raw.split("|").map { it.trim() }.filter { it.isNotEmpty() }
+            when {
+                parts.size >= 2 -> RecognizedLabel(primary = parts[0], secondary = parts[1])
+                parts.size == 1 -> RecognizedLabel(primary = parts[0], secondary = null)
+                else -> null
+            }
         } catch (e: Exception) {
             Log.e(TAG, "辨識失敗", e)
             null
