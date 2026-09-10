@@ -31,7 +31,22 @@
   對齊 `PreviewView` 實際顯示的縮放/裁切，框的位置在大多數機型上會偏移
 - **自訂名稱／翻譯的本地儲存**：目前辨識出文字後還沒有查表/存表的邏輯，
   也還沒有讓使用者輸入自訂名稱的畫面
-- 沒有 app icon、沒有設定 CI
+- 沒有 app icon
+
+## 自動建置與發版
+
+`.github/workflows/release.yml`：每次 push 到 `main` 會自動觸發，用
+`github.run_number` 當版號（`versionCode` = run number，`versionName` =
+`0.1.<run number>`），組出 debug APK，然後建立一個 GitHub Release，
+附上 APK，並用 `generate_release_notes: true` 自動把這次 push 之間的
+commit 訊息整理成異動內容。也就是說：
+
+- 想看目前建置成功了沒、有沒有 APK → 看 repo 的 **Actions** 頁籤
+- 想抓 APK、看版本間差異 → 看 repo 的 **Releases** 頁籤
+
+目前是組 debug APK（用 debug key 自動簽署），還沒有設定正式簽署金鑰；
+之後如果要發布到 Play Store 或想要 release 簽署版，需要另外準備
+keystore 並存進 repo 的 Actions secrets。
 
 ## 重要限制
 

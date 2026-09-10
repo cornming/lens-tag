@@ -12,8 +12,10 @@ android {
         applicationId = "com.cornming.lenstag"
         minSdk = 26 // ML Kit GenAI Prompt API 要求 API 26+
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        // CI（.github/workflows/release.yml）會帶 VERSION_CODE / VERSION_NAME 進來
+        // 做自動版號遞增；本機建置沒有這兩個環境變數時就用下面的預設值。
+        versionCode = System.getenv("VERSION_CODE")?.toIntOrNull() ?: 1
+        versionName = System.getenv("VERSION_NAME") ?: "0.1.0"
     }
 
     buildTypes {
