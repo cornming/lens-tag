@@ -43,10 +43,12 @@
   CI 建置都用同一把簽。不這樣做的話，CI runner 每次都是全新機器，會自動生一把
   新的 debug key，裝置上新版跟舊版簽章對不上，Android 會拒絕覆蓋安裝，只能先
   解除安裝再裝新版
-- **更新檢查**：開 App 時會靜靜查一次 GitHub 最新 Release（比對 tag_name 裡的
-  build number 跟目前 `versionCode`），有新版會跳對話框，按「前往下載」會開
-  瀏覽器連到 APK 下載連結；目前是開瀏覽器下載後要手動安裝，還沒做 App 內直接
-  下載安裝那一段（需要額外處理 `REQUEST_INSTALL_PACKAGES` 權限跟 FileProvider）
+- **更新檢查與安裝**：開 App 時會靜靜查一次 GitHub 最新 Release（比對
+  tag_name 裡的 build number 跟目前 `versionCode`），有新版會跳對話框，
+  按「下載並安裝」直接在 App 內用 `DownloadManager` 下載 APK（進度在系統
+  通知列可以看到），下載完自動跳系統安裝畫面，不用自己開瀏覽器、找下載
+  資料夾、手動點開檔案。Android 8+ 第一次會需要跳系統設定頁允許「安裝
+  未知應用程式」，允許後會自動接著下載
 - 沒有 app icon
 
 ## 已知問題修正紀錄

@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -18,6 +19,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -29,6 +31,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.cornming.lenstag.ui.CameraScreen
+import com.cornming.lenstag.update.ApkInstaller
 import com.cornming.lenstag.update.UpdateChecker
 import com.cornming.lenstag.update.UpdateInfo
 
@@ -48,20 +51,19 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun LensTagApp() {
     val context = LocalContext.current
+
     var hasPermission by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
                 PackageManager.PERMISSION_GRANTED,
         )
     }
-
-    val launcher = rememberLauncherForActivityResult(
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
     ) { granted -> hasPermission = granted }
-
     LaunchedEffect(Unit) {
         if (!hasPermission) {
-            launcher.launch(Manifest.permission.CAMERA)
+            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
         }
     }
 
@@ -70,6 +72,42 @@ private fun LensTagApp() {
     var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
     LaunchedEffect(Unit) {
         updateInfo = UpdateChecker(BuildConfig.VERSION_CODE).checkForUpdate()
+    }
+
+    // App 內下載＋安裝更新，不用使用者自己開瀏覽器找檔案
+    val installer = remember { ApkInstaller(context) }
+    DisposableEffect(Unit) {
+        installer.register()
+        onDispose { installer.unregister() }
+    }
+
+    // Android 8+ 第一次安裝來源沒授權時，要先跳系統設定頁讓使用者允許；
+    // 記住當下要裝的 APK 網址，回來後如果授權成功就直接接著下載。
+    var pendingApkUrl by remember { mutableStateOf<String?>(null) }
+    val installSettingsLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult(),
+    ) {
+        val url = pendingApkUrl
+        pendingApkUrl = null
+        if (url != null && context.packageManager.canRequestPackageInstalls()) {
+            installer.download(url)
+            updateInfo = null
+        }
+    }
+
+    fun startUpdate(apkUrl: String) {
+        if (context.packageManager.canRequestPackageInstalls()) {
+            installer.download(apkUrl)
+            updateInfo = null
+        } else {
+            pendingApkUrl = apkUrl
+            installSettingsLauncher.launch(
+                Intent(
+                    Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                    Uri.parse("package:${context.packageName}"),
+                ),
+            )
+        }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -89,10 +127,15 @@ private fun LensTagApp() {
                 text = { Text("目前版本：${info.versionName}") },
                 confirmButton = {
                     TextButton(onClick = {
-                        val url = info.apkDownloadUrl ?: info.releaseUrl
-                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-                        updateInfo = null
-                    }) { Text("前往下載") }
+                        val apkUrl = info.apkDownloadUrl
+                        if (apkUrl != null) {
+                            startUpdate(apkUrl)
+                        } else {
+                            // 理論上 Release 一定會附 APK，這裡只是保險退路
+                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(info.releaseUrl)))
+                            updateInfo = null
+                        }
+                    }) { Text("下載並安裝") }
                 },
                 dismissButton = {
                     TextButton(onClick = { updateInfo = null }) { Text("稍後") }
