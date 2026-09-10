@@ -1,6 +1,7 @@
 plugins {
+    // AGP 9 開始內建 Kotlin 支援，不需要（也不能）再套用 org.jetbrains.kotlin.android，
+    // 套了會直接 "Failed to apply plugin" 建置失敗
     alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
 }
 
