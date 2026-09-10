@@ -1,10 +1,13 @@
 package com.cornming.lenstag.ui
 
 import android.graphics.RectF
+import android.util.Size as AndroidSize
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ExperimentalGetImage
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Canvas
@@ -21,6 +24,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -33,6 +37,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
@@ -74,10 +79,15 @@ private data class TrackedBox(
 @OptIn(ExperimentalGetImage::class)
 @Composable
 fun CameraScreen() {
+    val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
     val recognizer = remember { ObjectRecognizer() }
     val textMeasurer = rememberTextMeasurer()
+    val speaker = remember { Speaker(context) }
+    DisposableEffect(Unit) {
+        onDispose { speaker.shutdown() }
+    }
 
     // 追蹤 ID -> 框位置與最後出現時間（含寬限期內、當前影格已經看不到的框）
     val trackedBoxes = remember { mutableStateMapOf<Int, TrackedBox>() }
@@ -126,7 +136,19 @@ fun CameraScreen() {
                         it.surfaceProvider = previewView.surfaceProvider
                     }
 
+                    // 分析解析度故意設低（640x480 等級即可），不需要跟預覽一樣高解析度，
+                    // 這樣每一次 ML Kit 推論的運算量小很多，也是降低發熱的一環。
+                    val resolutionSelector = ResolutionSelector.Builder()
+                        .setResolutionStrategy(
+                            ResolutionStrategy(
+                                AndroidSize(640, 480),
+                                ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER,
+                            ),
+                        )
+                        .build()
+
                     val analysis = ImageAnalysis.Builder()
+                        .setResolutionSelector(resolutionSelector)
                         .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                         .build()
 
@@ -173,17 +195,34 @@ fun CameraScreen() {
             modifier = Modifier
                 .fillMaxSize()
                 .pointerInput(Unit) {
-                    detectTapGestures { tap ->
-                        val (sw, sh) = sourceSize
-                        if (sw == 0 || sh == 0) return@detectTapGestures
-                        val transform = previewTransform(sw, sh, size.width.toFloat(), size.height.toFloat())
-                        // 找出點到的框（優先選中較小的框，比較符合直覺）
-                        renamingId = trackedBoxes.entries
-                            .map { it.key to transform.apply(it.value.box) }
-                            .filter { (_, r) -> r.contains(tap.x, tap.y) }
-                            .minByOrNull { (_, r) -> r.width() * r.height() }
-                            ?.first
-                    }
+                    detectTapGestures(
+                        onTap = onTap@{ tap ->
+                            val (sw, sh) = sourceSize
+                            if (sw == 0 || sh == 0) return@onTap
+                            val transform = previewTransform(sw, sh, size.width.toFloat(), size.height.toFloat())
+                            val hitId = trackedBoxes.entries
+                                .map { it.key to transform.apply(it.value.box) }
+                                .filter { (_, r) -> r.contains(tap.x, tap.y) }
+                                .minByOrNull { (_, r) -> r.width() * r.height() }
+                                ?.first
+                            hitId?.let { id ->
+                                (labels[id] as? LabelState.Named)?.let { named ->
+                                    speaker.speak(named, displayMode, secondaryLanguage)
+                                }
+                            }
+                        },
+                        onLongPress = onLongPress@{ tap ->
+                            val (sw, sh) = sourceSize
+                            if (sw == 0 || sh == 0) return@onLongPress
+                            val transform = previewTransform(sw, sh, size.width.toFloat(), size.height.toFloat())
+                            // 找出點到的框（優先選中較小的框，比較符合直覺）
+                            renamingId = trackedBoxes.entries
+                                .map { it.key to transform.apply(it.value.box) }
+                                .filter { (_, r) -> r.contains(tap.x, tap.y) }
+                                .minByOrNull { (_, r) -> r.width() * r.height() }
+                                ?.first
+                        },
+                    )
                 },
         ) {
             val (sw, sh) = sourceSize

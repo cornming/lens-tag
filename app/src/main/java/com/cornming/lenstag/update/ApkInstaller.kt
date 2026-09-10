@@ -10,6 +10,7 @@ import android.os.Environment
 import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import kotlinx.coroutines.delay
 import java.io.File
 
 private const val TAG = "ApkInstaller"
@@ -55,7 +56,7 @@ class ApkInstaller(private val context: Context) {
         }
     }
 
-    fun download(apkUrl: String) {
+    fun download(apkUrl: String): Long {
         targetFile().let { if (it.exists()) it.delete() } // 避免上次沒裝完的舊檔案造成衝突
 
         val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
@@ -65,6 +66,40 @@ class ApkInstaller(private val context: Context) {
             .setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, APK_FILE_NAME)
 
         pendingDownloadId = manager.enqueue(request)
+        return pendingDownloadId
+    }
+
+    /**
+     * 輪詢下載進度直到完成或失敗為止（App 內進度條用；系統通知列本來就會顯示，
+     * 這個是額外給想在畫面上直接看進度的情境）。
+     * onProgress 收到 0f~1f；total 大小還不知道時收到 null（顯示成不確定的跑動進度條即可）。
+     */
+    suspend fun observeProgress(downloadId: Long, onProgress: (Float?) -> Unit) {
+        val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+        while (true) {
+            val cursor = manager.query(DownloadManager.Query().setFilterById(downloadId))
+            var shouldStop = false
+            cursor.use {
+                if (it.moveToFirst()) {
+                    val status = it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
+                    val downloaded = it.getLong(
+                        it.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR),
+                    )
+                    val total = it.getLong(it.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
+
+                    onProgress(if (total > 0) downloaded.toFloat() / total else null)
+
+                    if (status == DownloadManager.STATUS_SUCCESSFUL || status == DownloadManager.STATUS_FAILED) {
+                        shouldStop = true
+                    }
+                } else {
+                    // 查不到這筆下載了（可能被系統清掉），沒什麼好等的
+                    shouldStop = true
+                }
+            }
+            if (shouldStop) return
+            delay(300)
+        }
     }
 
     private fun promptInstall() {
