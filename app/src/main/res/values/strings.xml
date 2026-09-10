@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">lens-tag</string>
+    <string name="camera_permission_rationale">需要相機權限才能辨識畫面中的物件</string>
+</resources>
