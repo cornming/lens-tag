@@ -41,7 +41,7 @@ enum class DisplayMode(val label: String) {
 fun LabelState.displayText(mode: DisplayMode): String = when (this) {
     LabelState.Unknown -> "?"
     LabelState.Recognizing -> "…"
-    is Named -> when (mode) {
+    is LabelState.Named -> when (mode) {
         DisplayMode.PRIMARY -> primary
         DisplayMode.SECONDARY -> secondary ?: primary
         DisplayMode.BOTH -> if (secondary != null) "$primary $secondary" else primary
