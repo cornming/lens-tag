@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    四個角括號組成相機觀景窗取景框，中間一顆綠色菱形代表「已標記的物件」，
+    綠色跟 CameraScreen 裡「已命名」狀態的框線同一個顏色（#4CAF50），
+    呼應 App 實際畫面。所有形狀都控制在中心 66dp 安全圈內，避免被系統的
+    圓形/方形遮罩裁到。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path android:pathData="M32,32 L46,32 L46,37 L37,37 L37,46 L32,46 Z" android:fillColor="#FFFFFF" />
+    <path android:pathData="M76,32 L62,32 L62,37 L71,37 L71,46 L76,46 Z" android:fillColor="#FFFFFF" />
+    <path android:pathData="M32,76 L46,76 L46,71 L37,71 L37,62 L32,62 Z" android:fillColor="#FFFFFF" />
+    <path android:pathData="M76,76 L62,76 L62,71 L71,71 L71,62 L76,62 Z" android:fillColor="#FFFFFF" />
+    <path android:pathData="M54,47 L61,54 L54,61 L47,54 Z" android:fillColor="#4CAF50" />
+</vector>

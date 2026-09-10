@@ -53,7 +53,12 @@
 - **點擊互動分成兩種**：短按框會用 TTS 把目前顯示的文字唸出來（原文固定
   用繁中發音，翻譯文字依「翻譯語言」設定猜對應語系），長按框才會跳出
   重新命名的對話框，兩個功能不會互相干擾
-- 沒有 app icon
+- **App icon**：`res/drawable/ic_launcher_background.xml`（深藍底）＋
+  `ic_launcher_foreground.xml`（白色取景框角括號＋綠色菱形標記，綠色跟
+  CameraScreen 裡「已命名」狀態的框線同一個顏色）組成 Adaptive Icon，另外
+  有 `ic_launcher_monochrome.xml` 給 Android 13+ 的主題化圖示用。因為
+  `minSdk` 本來就是 26（Adaptive Icon 剛好也是 API 26 才有的機制），不需要
+  再另外準備舊版密度分層的 PNG 圖示
 
 ## 已知問題修正紀錄
 
