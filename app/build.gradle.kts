@@ -19,6 +19,19 @@ android {
         versionName = System.getenv("VERSION_NAME") ?: "0.1.0"
     }
 
+    signingConfigs {
+        getByName("debug") {
+            // 固定用 repo 裡存好的 debug keystore（keystore/debug.keystore），
+            // 不要用 CI runner 每次自動產生的那把——runner 是全新機器，沒有這個
+            // 設定的話每次建置的 debug 簽章都不一樣，裝置上會因為簽章對不起來
+            // 裝不上去，只能每次先解除安裝舊版再裝新版。
+            storeFile = rootProject.file("keystore/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -36,6 +49,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true // UpdateChecker 要讀 BuildConfig.VERSION_CODE
     }
 }
 

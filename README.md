@@ -38,6 +38,15 @@
 - **改語言後不會回溯**：切換翻譯語言只影響之後新辨識的物件，已經辨識過
   的物件不會自動用新語言重問一次（刻意簡化，避免每次調設定就重打模型）
 - **多次觀測取共識**：目前單次辨識就定案，還沒做多角度投票
+- **固定 debug 簽章**：`keystore/debug.keystore` 是固定存進 repo 的 debug
+  keystore，`app/build.gradle.kts` 的 `signingConfigs.debug` 指到這把，本機和
+  CI 建置都用同一把簽。不這樣做的話，CI runner 每次都是全新機器，會自動生一把
+  新的 debug key，裝置上新版跟舊版簽章對不上，Android 會拒絕覆蓋安裝，只能先
+  解除安裝再裝新版
+- **更新檢查**：開 App 時會靜靜查一次 GitHub 最新 Release（比對 tag_name 裡的
+  build number 跟目前 `versionCode`），有新版會跳對話框，按「前往下載」會開
+  瀏覽器連到 APK 下載連結；目前是開瀏覽器下載後要手動安裝，還沒做 App 內直接
+  下載安裝那一段（需要額外處理 `REQUEST_INSTALL_PACKAGES` 權限跟 FileProvider）
 - 沒有 app icon
 
 ## 已知問題修正紀錄
