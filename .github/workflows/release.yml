@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: write
+  issues: write
 
 jobs:
   build:
@@ -20,8 +21,12 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # 這個 repo 目前沒有 gradle wrapper，所以明確指定 Gradle 版本，
+      # 不要用 runner 預裝的（版本太舊，AGP 9 需要 Gradle 9.x）
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.3'
 
       - name: Compute version
         id: version
@@ -30,10 +35,30 @@ jobs:
           echo "name=0.1.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
 
       - name: Build debug APK
+        id: build
+        continue-on-error: true
         env:
           VERSION_CODE: ${{ steps.version.outputs.code }}
           VERSION_NAME: ${{ steps.version.outputs.name }}
-        run: gradle assembleDebug
+        run: |
+          set -o pipefail
+          gradle assembleDebug --stacktrace 2>&1 | tee /tmp/build.log
+
+      # 建置失敗時把 log 尾段開成 issue，方便在沙箱裡透過 API 讀到錯誤原因
+      - name: Report build failure
+        if: steps.build.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo '```'
+            tail -c 8000 /tmp/build.log
+            echo '```'
+          } > /tmp/issue-body.md
+          gh issue create \
+            --title "CI 建置失敗 (run ${{ github.run_number }})" \
+            --body-file /tmp/issue-body.md
+          exit 1
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
