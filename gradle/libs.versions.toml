@@ -25,7 +25,8 @@ camera-core = { group = "androidx.camera", name = "camera-core", version.ref = "
 camera-camera2 = { group = "androidx.camera", name = "camera-camera2", version.ref = "cameraX" }
 camera-lifecycle = { group = "androidx.camera", name = "camera-lifecycle", version.ref = "cameraX" }
 camera-view = { group = "androidx.camera", name = "camera-view", version.ref = "cameraX" }
-mlkit-object-detection = { group = "com.google.mlkit", name = "object-detection", version.ref = "mlkitObjectDetection" }
+# 注意：alias 不能拆出 "object" 這個字段，Kotlin DSL 產生的存取器會撞到保留字
+mlkit-objectdetection = { group = "com.google.mlkit", name = "object-detection", version.ref = "mlkitObjectDetection" }
 mlkit-genai-prompt = { group = "com.google.mlkit", name = "genai-prompt", version.ref = "mlkitGenaiPrompt" }
 
 [plugins]

@@ -53,6 +53,6 @@ dependencies {
     implementation(libs.camera.lifecycle)
     implementation(libs.camera.view)
 
-    implementation(libs.mlkit.object.detection)
+    implementation(libs.mlkit.objectdetection)
     implementation(libs.mlkit.genai.prompt)
 }
