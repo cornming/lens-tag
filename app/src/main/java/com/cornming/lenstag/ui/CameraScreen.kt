@@ -78,8 +78,11 @@ private const val BOX_GRACE_PERIOD_MS = 500L
 /** 標籤文字跟框之間、以及跟螢幕邊緣之間留的間距 */
 private const val LABEL_PADDING_PX = 8f
 
-/** VR 模式下，準星停留在同一個框裡多久算「選取」。 */
-private const val DWELL_MS = 1500L
+/** VR 模式下，準星停留在同一個框裡多久算「短停留」（唸發音，等同一般模式短按）。 */
+private const val DWELL_SHORT_MS = 1500L
+
+/** 在短停留之後，繼續停留到這個累積時間算「長停留」（開命名/標記對話框，等同一般模式長按）。 */
+private const val DWELL_LONG_MS = 3000L
 
 /** 一般模式／VR cardboard 模式。 */
 private enum class ViewMode { NORMAL, VR_CARDBOARD }
@@ -153,8 +156,10 @@ fun CameraScreen() {
     val frameSink = remember { FrameSink() }
     var latestFrame by remember { mutableStateOf<ImageBitmap?>(null) }
     var vrContainerSize by remember { mutableStateOf(IntSize.Zero) }
-    // 準星停留進度，0f~1f，只在 VR 模式下有意義
+    // 準星停留進度，0f~1f，只在 VR 模式下有意義；gazePastShort 代表已經過了
+    // 短停留門檻、正在往長停留（開對話框）累積，準星顏色靠這個切換
     var gazeProgress by remember { mutableStateOf(0f) }
+    var gazePastShort by remember { mutableStateOf(false) }
 
     LaunchedEffect(viewMode) {
         frameSink.onFrame = if (viewMode == ViewMode.VR_CARDBOARD) {
@@ -164,16 +169,21 @@ fun CameraScreen() {
         }
     }
 
-    // VR 模式的「凝視＋停留」偵測：準星固定在每一半畫面的正中央，
-    // 持續同一個框超過 DWELL_MS 就觸發唸出發音（跟一般模式短按的動作一樣）。
+    // VR 模式的「凝視＋停留」偵測：準星固定在每一半畫面的正中央，分兩段：
+    // 停留到 DWELL_SHORT_MS 唸出發音（等同一般模式短按），如果視線沒移開、
+    // 繼續停留到 DWELL_LONG_MS 則開命名/標記對話框（等同一般模式長按）。
+    // 對話框本身還是要用手摸（輸入文字、按確定），所以這個用法預期是：
+    // 用凝視選好要哪個物件，再把手機從 viewer 拿出來完成剩下的操作。
     LaunchedEffect(viewMode) {
         if (viewMode != ViewMode.VR_CARDBOARD) {
             gazeProgress = 0f
+            gazePastShort = false
             return@LaunchedEffect
         }
         var gazedId: Int? = null
         var gazeStartMs = 0L
-        var fired = false
+        var firedShort = false
+        var firedLong = false
         while (true) {
             delay(100)
             val (sw, sh) = sourceSize
@@ -196,19 +206,35 @@ fun CameraScreen() {
             if (hitId != gazedId) {
                 gazedId = hitId
                 gazeStartMs = System.currentTimeMillis()
-                fired = false
+                firedShort = false
+                firedLong = false
                 gazeProgress = 0f
+                gazePastShort = false
             } else if (hitId != null) {
                 val elapsed = System.currentTimeMillis() - gazeStartMs
-                gazeProgress = (elapsed.toFloat() / DWELL_MS).coerceIn(0f, 1f)
-                if (!fired && elapsed >= DWELL_MS) {
-                    fired = true
-                    (labels[hitId] as? LabelState.Named)?.let { named ->
-                        speaker.speak(named, displayMode, secondaryLanguage)
+
+                if (!firedShort) {
+                    gazeProgress = (elapsed.toFloat() / DWELL_SHORT_MS).coerceIn(0f, 1f)
+                    if (elapsed >= DWELL_SHORT_MS) {
+                        firedShort = true
+                        gazePastShort = true
+                        gazeProgress = 0f
+                        (labels[hitId] as? LabelState.Named)?.let { named ->
+                            speaker.speak(named, displayMode, secondaryLanguage)
+                        }
+                    }
+                } else if (!firedLong) {
+                    val longSpan = DWELL_LONG_MS - DWELL_SHORT_MS
+                    gazeProgress = ((elapsed - DWELL_SHORT_MS).toFloat() / longSpan).coerceIn(0f, 1f)
+                    if (elapsed >= DWELL_LONG_MS) {
+                        firedLong = true
+                        gazeProgress = 0f
+                        renamingId = hitId
                     }
                 }
             } else {
                 gazeProgress = 0f
+                gazePastShort = false
             }
         }
     }
@@ -377,7 +403,7 @@ fun CameraScreen() {
                             )
                             if (gazeProgress > 0f) {
                                 drawCircle(
-                                    color = Color(0xFF4CAF50),
+                                    color = if (gazePastShort) Color(0xFFFFA000) else Color(0xFF4CAF50),
                                     radius = 16f * gazeProgress,
                                     center = center,
                                 )
