@@ -28,6 +28,16 @@ data class DetectionResult(
 )
 
 /**
+ * VR 模式才需要看到完整影格（一般模式只需要框的座標，不需要真的拿整張圖）。
+ * 用一個可以動態開關的容器傳進 ObjectAnalyzer，這樣平常模式完全不會多做
+ * Bitmap 轉換這筆額外開銷，只有切到 VR 模式才會付出這個成本。
+ */
+class FrameSink {
+    @Volatile
+    var onFrame: ((Bitmap) -> Unit)? = null
+}
+
+/**
  * 持續跑 ML Kit Object Detection & Tracking（STREAM_MODE），
  * 每一影格輸出目前偵測到的物件框＋追蹤 ID。
  *
@@ -42,6 +52,7 @@ data class DetectionResult(
 class ObjectAnalyzer(
     private val onDetected: (DetectionResult) -> Unit,
     private val onStableObject: (trackingId: Int, cropped: Bitmap) -> Unit,
+    private val frameSink: FrameSink,
 ) : ImageAnalysis.Analyzer {
 
     private val detector = ObjectDetection.getClient(
@@ -111,6 +122,15 @@ class ObjectAnalyzer(
                 val stableIds = updateStability(boxes)
                 if (stableIds.isNotEmpty()) {
                     emitCrops(imageProxy, rotation, boxes, stableIds)
+                }
+
+                // 只有 VR 模式會設定這個 callback，一般模式維持零成本
+                frameSink.onFrame?.let { callback ->
+                    try {
+                        callback(imageProxy.toBitmap().rotated(rotation))
+                    } catch (e: Exception) {
+                        // 轉檔失敗就跳過這一影格，VR 畫面停格一下沒關係，下一輪會補上
+                    }
                 }
 
                 pruneVanished(boxes.map { it.trackingId }.toSet())
