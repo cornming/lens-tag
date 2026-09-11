@@ -28,6 +28,15 @@ data class DetectionResult(
 )
 
 /**
+ * 兩次 ML Kit 偵測之間至少要間隔多久（毫秒），可以動態調整（從畫面上的設定
+ * 對話框改），不用重建整個 CameraX pipeline。數字越小越靈敏也越耗電發熱。
+ */
+class AnalysisSettings(initialIntervalMs: Long = 150L) {
+    @Volatile
+    var intervalMs: Long = initialIntervalMs
+}
+
+/**
  * VR 模式才需要看到完整影格（一般模式只需要框的座標，不需要真的拿整張圖）。
  * 用一個可以動態開關的容器傳進 ObjectAnalyzer，這樣平常模式完全不會多做
  * Bitmap 轉換這筆額外開銷，只有切到 VR 模式才會付出這個成本。
@@ -53,6 +62,7 @@ class ObjectAnalyzer(
     private val onDetected: (DetectionResult) -> Unit,
     private val onStableObject: (trackingId: Int, cropped: Bitmap) -> Unit,
     private val frameSink: FrameSink,
+    private val analysisSettings: AnalysisSettings,
 ) : ImageAnalysis.Analyzer {
 
     private val detector = ObjectDetection.getClient(
@@ -81,7 +91,8 @@ class ObjectAnalyzer(
         // 相機預覽本身不受影響，只是「拿去跑 ML Kit 偵測」的頻率降到這個間隔一次。
         // 手機發燙主要是因為持續在相機原生 fps（常見 30fps）全速跑模型推論；
         // 這種用途的物件根本不需要每影格都判斷一次，跳過的影格直接關閉、不處理。
-        if (now - lastAnalyzedAtMs < MIN_ANALYSIS_INTERVAL_MS) {
+        // 間隔數字讀 analysisSettings.intervalMs，使用者可以在畫面上動態調整。
+        if (now - lastAnalyzedAtMs < analysisSettings.intervalMs) {
             imageProxy.close()
             return
         }
@@ -215,10 +226,6 @@ class ObjectAnalyzer(
 
         /** 要連續穩定這麼多影格才觸發辨識 */
         const val REQUIRED_STABLE_FRAMES = 5
-
-        /** 兩次 ML Kit 偵測之間至少間隔多久（毫秒）。150ms ≈ 每秒約 6-7 次判斷，
-         *  對「物件框住＋辨識」這種用途已經夠用，不需要跟到相機原生 30fps。 */
-        const val MIN_ANALYSIS_INTERVAL_MS = 150L
     }
 }
 

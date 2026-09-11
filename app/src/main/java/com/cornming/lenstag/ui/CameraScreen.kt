@@ -28,6 +28,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -61,6 +62,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import com.cornming.lenstag.camera.AnalysisSettings
 import com.cornming.lenstag.camera.DetectionResult
 import com.cornming.lenstag.camera.FrameSink
 import com.cornming.lenstag.camera.ObjectAnalyzer
@@ -139,6 +141,16 @@ fun CameraScreen() {
     var displayMode by remember { mutableStateOf(DisplayMode.BOTH) }
     var secondaryLanguage by remember { mutableStateOf("English") }
     var editingLanguage by remember { mutableStateOf(false) }
+
+    // 畫面更新頻率（兩次 ML Kit 偵測間至少間隔多久）。analysisSettings 是傳給
+    // ObjectAnalyzer 的可變容器，updateIntervalMs 是給 UI 顯示/互動用的 Compose
+    // state，兩者用 LaunchedEffect 同步，這樣調整設定不需要重建整個相機 pipeline。
+    val analysisSettings = remember { AnalysisSettings() }
+    var updateIntervalMs by remember { mutableStateOf(150L) }
+    var editingFrequency by remember { mutableStateOf(false) }
+    LaunchedEffect(updateIntervalMs) {
+        analysisSettings.intervalMs = updateIntervalMs
+    }
 
     // 標記過的單字，存在本機（SharedPreferences），跨 session 都在。
     val markedWordsStore = remember { MarkedWordsStore(context) }
@@ -310,6 +322,7 @@ fun CameraScreen() {
                                 }
                             },
                             frameSink = frameSink,
+                            analysisSettings = analysisSettings,
                         ),
                     )
 
@@ -437,6 +450,9 @@ fun CameraScreen() {
             Button(onClick = { showingMarkedWords = true }) {
                 Text("單字本 (${markedWords.size})")
             }
+            Button(onClick = { editingFrequency = true }) {
+                Text("更新頻率")
+            }
             Button(
                 onClick = {
                     viewMode = if (viewMode == ViewMode.NORMAL) ViewMode.VR_CARDBOARD else ViewMode.NORMAL
@@ -490,6 +506,17 @@ fun CameraScreen() {
                 onRemove = { primary ->
                     markedWordsStore.remove(primary)
                     markedWords = markedWordsStore.getAll()
+                },
+            )
+        }
+
+        if (editingFrequency) {
+            UpdateFrequencyDialog(
+                initialIntervalMs = updateIntervalMs,
+                onDismiss = { editingFrequency = false },
+                onConfirm = { ms ->
+                    updateIntervalMs = ms
+                    editingFrequency = false
                 },
             )
         }
@@ -663,6 +690,37 @@ private fun MarkedWordsDialog(
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("關閉") } },
+    )
+}
+
+@Composable
+private fun UpdateFrequencyDialog(
+    initialIntervalMs: Long,
+    onDismiss: () -> Unit,
+    onConfirm: (Long) -> Unit,
+) {
+    var value by remember { mutableStateOf(initialIntervalMs.toFloat()) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("畫面更新頻率") },
+        text = {
+            Column {
+                val fps = 1000f / value
+                Text("間隔 ${value.toInt()} 毫秒（約每秒 ${"%.1f".format(fps)} 次）", fontSize = 12.sp)
+                Text(
+                    "數字越小越靈敏，但比較耗電發熱；數字越大越省電，畫面更新會比較慢。",
+                    fontSize = 12.sp,
+                )
+                Slider(
+                    value = value,
+                    onValueChange = { value = it },
+                    valueRange = 80f..1000f,
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = { onConfirm(value.toLong()) }) { Text("確定") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
 }
 
