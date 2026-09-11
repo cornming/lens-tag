@@ -69,4 +69,7 @@ dependencies {
 
     implementation(libs.mlkit.objectdetection)
     implementation(libs.mlkit.genai.prompt)
+
+    testImplementation(libs.junit)
+    testImplementation(libs.org.json)
 }

@@ -143,6 +143,31 @@ commit 訊息整理成異動內容。也就是說：
 之後如果要發布到 Play Store 或想要 release 簽署版，需要另外準備
 keystore 並存進 repo 的 Actions secrets。
 
+## 自動化測試
+
+`app/src/test`：純 JVM 單元測試（`gradle testDebugUnitTest`），CI 在建置
+APK 之前會先跑（見 `.github/workflows/release.yml`），測試沒過就不會浪費
+時間去組 APK，也會跟建置失敗一樣自動開 issue 附上錯誤訊息。
+
+**測得到的**：有明確對錯答案的純邏輯——
+- 座標轉換數學（`PreviewTransformTest`，「框歪掉」那個 bug 的根源）
+- 靜止/移動的穩定度判斷（`StabilityTrackerTest`）
+- Release tag 的版號解析（`UpdateCheckerTest`）
+- 標記單字的 JSON 編解碼、toggle 語義（`MarkedWordsCodecTest`）
+- 雙語顯示邏輯（`LabelStateTest`）、字典查詢網址編碼（`DictionaryUrlTest`）
+
+**測不到的**：相機、ML Kit 辨識準不準、Gemini Nano、TTS 發音這些吃真實
+硬體的東西。CI 的 runner 沒有相機也沒有 NPU，這塊不管怎麼設計自動化測試
+都驗證不了，還是得看實機。
+
+這幾個檔案能寫成純 JVM 測試（不用 Robolectric、不用模擬器），是因為把
+座標數學（`geometry.Box`／`PreviewTransform`）和穩定度判斷
+（`geometry.StabilityTracker`）從 `ObjectAnalyzer`／`CameraScreen` 抽成
+不依賴 `android.graphics.RectF` 的純 Kotlin 邏輯；字典網址也從
+`android.net.Uri.encode` 換成 `java.net.URLEncoder`。這是刻意選風險最低
+的做法——Robolectric 對這種剛升級到最新 AGP/Kotlin/compileSdk 的專案支援
+可能會落後，純 JVM 測試不用賭這個相容性。
+
 ## 重要限制
 
 - ML Kit GenAI Prompt API（Gemini Nano）目前只支援搭載 AICore 的機型

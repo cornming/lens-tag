@@ -12,6 +12,9 @@ mlkitGenaiPrompt = "1.0.0-beta4"
 coreKtx = "1.15.0"
 lifecycleRuntimeKtx = "2.9.0"
 activityCompose = "1.10.0"
+# 測試用，兩個都是穩定套件，版本查證過
+junit = "4.13.2"
+orgJson = "20260814"
 
 [libraries]
 core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -28,6 +31,8 @@ camera-view = { group = "androidx.camera", name = "camera-view", version.ref = "
 # 注意：alias 不能拆出 "object" 這個字段，Kotlin DSL 產生的存取器會撞到保留字
 mlkit-objectdetection = { group = "com.google.mlkit", name = "object-detection", version.ref = "mlkitObjectDetection" }
 mlkit-genai-prompt = { group = "com.google.mlkit", name = "genai-prompt", version.ref = "mlkitGenaiPrompt" }
+junit = { group = "junit", name = "junit", version.ref = "junit" }
+org-json = { group = "org.json", name = "json", version.ref = "orgJson" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

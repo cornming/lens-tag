@@ -28,6 +28,35 @@ jobs:
         with:
           gradle-version: '9.7.1'
 
+      # 純 JVM 單元測試（app/src/test），不需要模擬器。涵蓋座標轉換、
+      # 穩定度判斷、版本比對、單字清單編解碼這些有明確對錯答案的邏輯；
+      # 相機/ML Kit 辨識/Gemini Nano/TTS 這些吃真實硬體的東西測不到，
+      # 那些還是得在實機上驗證。
+      - name: Run unit tests
+        id: test
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          gradle testDebugUnitTest 2>&1 | tee /tmp/test.log
+
+      - name: Report test failure
+        if: steps.test.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          grep -v $'^\tat ' /tmp/test.log \
+            | grep -v '^Caused by: org.gradle' \
+            | tail -c 6000 > /tmp/filtered-test.log
+          {
+            echo '```'
+            cat /tmp/filtered-test.log
+            echo '```'
+          } > /tmp/issue-body.md
+          gh issue create \
+            --title "CI 單元測試失敗 (run ${{ github.run_number }})" \
+            --body-file /tmp/issue-body.md
+          exit 1
+
       - name: Compute version
         id: version
         run: |

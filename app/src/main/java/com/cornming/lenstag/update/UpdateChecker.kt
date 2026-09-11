@@ -19,6 +19,15 @@ data class UpdateInfo(
 )
 
 /**
+ * 從 Release 的 tag_name（格式 "build-<CI run number>"，見
+ * .github/workflows/release.yml）取出數字版號；格式不對就回傳 null。
+ * 抽成獨立函式方便直接寫單元測試（見 app/src/test/.../UpdateCheckerTest.kt），
+ * 不用真的發一次 HTTP 請求才能驗證這段邏輯對不對。
+ */
+internal fun parseBuildNumber(tagName: String): Int? =
+    tagName.substringAfterLast("-").toIntOrNull()
+
+/**
  * 開啟 App 時檢查 GitHub Releases 有沒有更新版本。
  *
  * 版本比對用的是 Release 的 tag_name（格式 "build-<CI run number>"）裡的數字，
@@ -42,8 +51,7 @@ class UpdateChecker(private val currentVersionCode: Int) {
             val json = JSONObject(body)
 
             val tagName = json.optString("tag_name") // 例如 "build-12"
-            val latestCode = tagName.substringAfterLast("-").toIntOrNull()
-                ?: return@withContext null
+            val latestCode = parseBuildNumber(tagName) ?: return@withContext null
 
             if (latestCode <= currentVersionCode) return@withContext null
 

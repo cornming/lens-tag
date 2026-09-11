@@ -3,19 +3,20 @@ package com.cornming.lenstag.camera
 import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.graphics.Rect
-import android.graphics.RectF
 import androidx.camera.core.ExperimentalGetImage
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
+import com.cornming.lenstag.geometry.Box
+import com.cornming.lenstag.geometry.StabilityTracker
+import com.cornming.lenstag.geometry.toBox
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.objects.ObjectDetection
 import com.google.mlkit.vision.objects.defaults.ObjectDetectorOptions
-import kotlin.math.abs
 
 /** 一個被 ML Kit 偵測到、且有追蹤 ID 的物件框。座標是「已旋轉後」的分析影像座標。 */
 data class DetectedBox(
     val trackingId: Int,
-    val boundingBox: RectF,
+    val boundingBox: Box,
 )
 
 /**
@@ -55,8 +56,9 @@ class FrameSink {
  * 偵測不需要知道類別，所以看到訓練資料沒有的東西也照樣框得出來；
  * 至於「這是什麼」，交給 recognize 套件的 Gemini Nano 事後補上。
  *
- * 另外借用「靜止 vs 移動」的概念：連續幾影格位移都很小的框才算 stable，
- * 只有 stable 的物件才觸發辨識——此時裁切出來的圖最清晰，也順便節流 AICore quota。
+ * 穩定度判斷（靜止 vs 移動）已經抽到 geometry.StabilityTracker，這裡只負責
+ * 把 ML Kit / CameraX 的型別轉成純 Kotlin 的 Box 再丟給它——這樣穩定度的
+ * 數學可以獨立寫單元測試，不用整個 CameraX pipeline 一起跑才能驗證。
  */
 class ObjectAnalyzer(
     private val onDetected: (DetectionResult) -> Unit,
@@ -72,14 +74,7 @@ class ObjectAnalyzer(
             .build(),
     )
 
-    /** 追蹤 ID -> 上一次的框位置，用來算位移 */
-    private val lastBoxes = mutableMapOf<Int, RectF>()
-
-    /** 追蹤 ID -> 已經連續穩定幾影格 */
-    private val stableFrames = mutableMapOf<Int, Int>()
-
-    /** 已經送出去辨識過的追蹤 ID，不重複送 */
-    private val alreadyEmitted = mutableSetOf<Int>()
+    private val stability = StabilityTracker()
 
     /** 上一次真正跑 ML Kit 的時間，用來節流分析頻率 */
     private var lastAnalyzedAtMs = 0L
@@ -118,7 +113,7 @@ class ObjectAnalyzer(
             .addOnSuccessListener { objects ->
                 val boxes = objects.mapNotNull { obj ->
                     obj.trackingId?.let { id ->
-                        DetectedBox(trackingId = id, boundingBox = RectF(obj.boundingBox))
+                        DetectedBox(trackingId = id, boundingBox = obj.boundingBox.toBox())
                     }
                 }
 
@@ -130,7 +125,7 @@ class ObjectAnalyzer(
                     ),
                 )
 
-                val stableIds = updateStability(boxes)
+                val stableIds = stability.update(boxes.associate { it.trackingId to it.boundingBox })
                 if (stableIds.isNotEmpty()) {
                     emitCrops(imageProxy, rotation, boxes, stableIds)
                 }
@@ -144,47 +139,11 @@ class ObjectAnalyzer(
                     }
                 }
 
-                pruneVanished(boxes.map { it.trackingId }.toSet())
+                stability.prune(boxes.map { it.trackingId }.toSet())
             }
             .addOnCompleteListener {
                 imageProxy.close()
             }
-    }
-
-    /** 更新每個追蹤 ID 的穩定度，回傳這一影格「剛好變成穩定、且還沒送出去辨識」的 ID。 */
-    private fun updateStability(boxes: List<DetectedBox>): List<Int> {
-        val newlyStable = mutableListOf<Int>()
-
-        boxes.forEach { box ->
-            val id = box.trackingId
-            val previous = lastBoxes[id]
-            lastBoxes[id] = RectF(box.boundingBox)
-
-            if (previous == null) {
-                stableFrames[id] = 0
-                return@forEach
-            }
-
-            // 用框中心的位移量當穩定度指標，門檻取框寬度的一個比例，
-            // 這樣近距離的大物件跟遠距離的小物件會用差不多寬鬆的標準
-            val dx = abs(box.boundingBox.centerX() - previous.centerX())
-            val dy = abs(box.boundingBox.centerY() - previous.centerY())
-            val threshold = box.boundingBox.width() * MOVEMENT_THRESHOLD_RATIO
-
-            if (dx < threshold && dy < threshold) {
-                val frames = (stableFrames[id] ?: 0) + 1
-                stableFrames[id] = frames
-                if (frames == REQUIRED_STABLE_FRAMES && id !in alreadyEmitted) {
-                    alreadyEmitted.add(id)
-                    newlyStable.add(id)
-                }
-            } else {
-                // 物件又動起來了，穩定度歸零重算
-                stableFrames[id] = 0
-            }
-        }
-
-        return newlyStable
     }
 
     /** 把穩定物件從當前影格裁切出來，交給呼叫端去辨識。 */
@@ -208,25 +167,6 @@ class ObjectAnalyzer(
             }
         }
     }
-
-    /** 追蹤 ID 消失時清掉狀態，避免這幾個 map 無限成長。 */
-    private fun pruneVanished(currentIds: Set<Int>) {
-        val gone = lastBoxes.keys - currentIds
-        gone.forEach { id ->
-            lastBoxes.remove(id)
-            stableFrames.remove(id)
-            // alreadyEmitted 刻意不清：同一個 ID 短時間內重新出現時不該重跑辨識。
-            // ML Kit 的追蹤 ID 是遞增的，長時間下來不會撞號。
-        }
-    }
-
-    private companion object {
-        /** 框中心位移小於「框寬 × 這個比例」就算沒動 */
-        const val MOVEMENT_THRESHOLD_RATIO = 0.02f
-
-        /** 要連續穩定這麼多影格才觸發辨識 */
-        const val REQUIRED_STABLE_FRAMES = 5
-    }
 }
 
 private fun Bitmap.rotated(degrees: Int): Bitmap {
@@ -236,7 +176,7 @@ private fun Bitmap.rotated(degrees: Int): Bitmap {
 }
 
 /** 依框裁切，並把座標夾在圖片範圍內，避免框超出邊界時 crash。 */
-private fun cropSafely(source: Bitmap, box: RectF): Bitmap? {
+private fun cropSafely(source: Bitmap, box: Box): Bitmap? {
     val rect = Rect(
         box.left.toInt().coerceIn(0, source.width - 1),
         box.top.toInt().coerceIn(0, source.height - 1),

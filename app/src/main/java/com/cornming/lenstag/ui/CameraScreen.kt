@@ -1,7 +1,6 @@
 package com.cornming.lenstag.ui
 
 import android.content.Intent
-import android.graphics.RectF
 import android.net.Uri
 import android.util.Size as AndroidSize
 import androidx.camera.core.CameraSelector
@@ -68,11 +67,15 @@ import com.cornming.lenstag.camera.FrameSink
 import com.cornming.lenstag.camera.ObjectAnalyzer
 import com.cornming.lenstag.data.MarkedWord
 import com.cornming.lenstag.data.MarkedWordsStore
+import com.cornming.lenstag.geometry.Box as GeomBox
+import com.cornming.lenstag.geometry.PreviewTransform
+import com.cornming.lenstag.geometry.previewTransform
 import com.cornming.lenstag.recognize.ObjectRecognizer
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.max
 import kotlin.math.min
+import java.net.URLEncoder
 
 /** 框在畫面上保留的寬限期：物件短暫被遮住或偵測跳掉時，標籤不要立刻閃掉。 */
 private const val BOX_GRACE_PERIOD_MS = 500L
@@ -91,7 +94,7 @@ private enum class ViewMode { NORMAL, VR_CARDBOARD }
 
 /** 畫面上一個框的當前狀態（含最後一次看到的時間，用來做寬限期）。 */
 private data class TrackedBox(
-    val box: RectF,
+    val box: GeomBox,
     val lastSeenAt: Long,
 )
 
@@ -212,7 +215,7 @@ fun CameraScreen() {
             val hitId = trackedBoxes.entries
                 .map { it.key to transform.apply(it.value.box) }
                 .filter { (_, r) -> r.contains(centerX, centerY) }
-                .minByOrNull { (_, r) -> r.width() * r.height() }
+                .minByOrNull { (_, r) -> r.width * r.height }
                 ?.first
 
             if (hitId != gazedId) {
@@ -352,7 +355,7 @@ fun CameraScreen() {
                                 val hitId = trackedBoxes.entries
                                     .map { it.key to transform.apply(it.value.box) }
                                     .filter { (_, r) -> r.contains(tap.x, tap.y) }
-                                    .minByOrNull { (_, r) -> r.width() * r.height() }
+                                    .minByOrNull { (_, r) -> r.width * r.height }
                                     ?.first
                                 hitId?.let { id ->
                                     (labels[id] as? LabelState.Named)?.let { named ->
@@ -368,7 +371,7 @@ fun CameraScreen() {
                                 renamingId = trackedBoxes.entries
                                     .map { it.key to transform.apply(it.value.box) }
                                     .filter { (_, r) -> r.contains(tap.x, tap.y) }
-                                    .minByOrNull { (_, r) -> r.width() * r.height() }
+                                    .minByOrNull { (_, r) -> r.width * r.height }
                                     ?.first
                             },
                         )
@@ -544,7 +547,7 @@ private fun DrawScope.drawDetections(
         drawRect(
             color = color,
             topLeft = Offset(rect.left, rect.top),
-            size = Size(rect.width(), rect.height()),
+            size = Size(rect.width, rect.height),
             style = Stroke(width = 4f),
         )
 
@@ -575,9 +578,13 @@ private fun DrawScope.drawDetections(
     }
 }
 
-/** 用 Google 搜尋查字義，語言不限，中英日韓文字都能正常編碼。 */
-private fun dictionaryUrl(word: String): String =
-    "https://www.google.com/search?q=" + Uri.encode("define $word")
+/**
+ * 用 Google 搜尋查字義，語言不限，中英日韓文字都能正常編碼。
+ * 用 java.net.URLEncoder 而不是 android.net.Uri.encode，這樣這個函式是純
+ * JVM 邏輯，可以直接寫單元測試（見 app/src/test/.../DictionaryUrlTest.kt）。
+ */
+internal fun dictionaryUrl(word: String): String =
+    "https://www.google.com/search?q=" + URLEncoder.encode("define $word", "UTF-8")
 
 @Composable
 private fun RenameDialog(
@@ -721,41 +728,5 @@ private fun UpdateFrequencyDialog(
         },
         confirmButton = { TextButton(onClick = { onConfirm(value.toLong()) }) { Text("確定") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
-    )
-}
-
-/**
- * 分析影像座標 -> 螢幕座標的換算。
- *
- * PreviewView 預設是 FILL_CENTER：影像等比例放大到填滿畫面，超出的部分被裁掉。
- * 所以縮放倍率取兩軸的較大值，再置中偏移。sourceWidth/sourceHeight 必須已經是
- * 「旋轉後」的尺寸（ObjectAnalyzer 已經處理過），不然這裡會整個算錯。
- * VR 模式呼叫這個函式時，viewWidth/viewHeight 傳的是「單一半邊」的寬高，
- * 不是整個螢幕，所以兩邊的準星／框位置換算出來才會正確對齊各自那一半畫面。
- */
-private class PreviewTransform(
-    private val scale: Float,
-    private val offsetX: Float,
-    private val offsetY: Float,
-) {
-    fun apply(box: RectF) = RectF(
-        box.left * scale + offsetX,
-        box.top * scale + offsetY,
-        box.right * scale + offsetX,
-        box.bottom * scale + offsetY,
-    )
-}
-
-private fun previewTransform(
-    sourceWidth: Int,
-    sourceHeight: Int,
-    viewWidth: Float,
-    viewHeight: Float,
-): PreviewTransform {
-    val scale = max(viewWidth / sourceWidth, viewHeight / sourceHeight)
-    return PreviewTransform(
-        scale = scale,
-        offsetX = (viewWidth - sourceWidth * scale) / 2f,
-        offsetY = (viewHeight - sourceHeight * scale) / 2f,
     )
 }
