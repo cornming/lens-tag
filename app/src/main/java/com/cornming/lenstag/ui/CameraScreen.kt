@@ -1,6 +1,8 @@
 package com.cornming.lenstag.ui
 
+import android.content.Intent
 import android.graphics.RectF
+import android.net.Uri
 import android.util.Size as AndroidSize
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ExperimentalGetImage
@@ -12,12 +14,16 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.OutlinedTextField
@@ -48,6 +54,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.cornming.lenstag.camera.DetectionResult
 import com.cornming.lenstag.camera.ObjectAnalyzer
+import com.cornming.lenstag.data.MarkedWord
+import com.cornming.lenstag.data.MarkedWordsStore
 import com.cornming.lenstag.recognize.ObjectRecognizer
 import kotlinx.coroutines.launch
 import kotlin.math.max
@@ -104,6 +112,16 @@ fun CameraScreen() {
     var displayMode by remember { mutableStateOf(DisplayMode.BOTH) }
     var secondaryLanguage by remember { mutableStateOf("English") }
     var editingLanguage by remember { mutableStateOf(false) }
+
+    // 標記過的單字，存在本機（SharedPreferences），跨 session 都在。
+    val markedWordsStore = remember { MarkedWordsStore(context) }
+    var markedWords by remember { mutableStateOf(markedWordsStore.getAll()) }
+    var showingMarkedWords by remember { mutableStateOf(false) }
+
+    fun toggleMark(primary: String, secondary: String?) {
+        markedWordsStore.toggle(MarkedWord(primary, secondary))
+        markedWords = markedWordsStore.getAll()
+    }
 
     fun onDetected(result: DetectionResult) {
         val now = System.currentTimeMillis()
@@ -273,10 +291,15 @@ fun CameraScreen() {
             }
         }
 
-        // 上方控制列：切換顯示模式／翻譯語言
+        // 上方控制列：切換顯示模式／翻譯語言／開單字本。
+        // 加 statusBarsPadding() 是因為 targetSdk 36 預設 edge-to-edge，
+        // 沒有這個的話按鈕會被狀態列蓋住一部分，點起來會不準；
+        // 橫向捲動則是避免三個按鈕在窄螢幕上擠不下。
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .statusBarsPadding()
+                .horizontalScroll(rememberScrollState())
                 .padding(16.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
@@ -286,6 +309,9 @@ fun CameraScreen() {
             Button(onClick = { editingLanguage = true }) {
                 Text("翻譯：$secondaryLanguage")
             }
+            Button(onClick = { showingMarkedWords = true }) {
+                Text("單字本 (${markedWords.size})")
+            }
         }
 
         renamingId?.let { id ->
@@ -293,6 +319,7 @@ fun CameraScreen() {
             RenameDialog(
                 initialPrimary = current?.primary.orEmpty(),
                 initialSecondary = current?.secondary.orEmpty(),
+                markedPrimaries = remember(markedWords) { markedWords.map { it.primary }.toSet() },
                 onDismiss = { renamingId = null },
                 onConfirm = { primary, secondary ->
                     if (primary.isNotBlank()) {
@@ -303,6 +330,12 @@ fun CameraScreen() {
                         )
                     }
                     renamingId = null
+                },
+                onToggleMark = { primary, secondary ->
+                    toggleMark(primary, secondary.ifBlank { null })
+                },
+                onOpenDictionary = { word ->
+                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(dictionaryUrl(word))))
                 },
             )
         }
@@ -317,37 +350,69 @@ fun CameraScreen() {
                 },
             )
         }
+
+        if (showingMarkedWords) {
+            MarkedWordsDialog(
+                words = markedWords,
+                onDismiss = { showingMarkedWords = false },
+                onRemove = { primary ->
+                    markedWordsStore.remove(primary)
+                    markedWords = markedWordsStore.getAll()
+                },
+            )
+        }
     }
 }
+
+/** 用 Google 搜尋查字義，語言不限，中英日韓文字都能正常編碼。 */
+private fun dictionaryUrl(word: String): String =
+    "https://www.google.com/search?q=" + Uri.encode("define $word")
 
 @Composable
 private fun RenameDialog(
     initialPrimary: String,
     initialSecondary: String,
+    markedPrimaries: Set<String>,
     onDismiss: () -> Unit,
     onConfirm: (primary: String, secondary: String) -> Unit,
+    onToggleMark: (primary: String, secondary: String) -> Unit,
+    onOpenDictionary: (word: String) -> Unit,
 ) {
     var primary by remember { mutableStateOf(initialPrimary) }
     var secondary by remember { mutableStateOf(initialSecondary) }
+    val isMarked = primary.isNotBlank() && primary in markedPrimaries
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("這是什麼？") },
         text = {
-            Box {
-                androidx.compose.foundation.layout.Column(
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    OutlinedTextField(
-                        value = primary,
-                        onValueChange = { primary = it },
-                        label = { Text("顯示名稱（原文）") },
-                    )
-                    OutlinedTextField(
-                        value = secondary,
-                        onValueChange = { secondary = it },
-                        label = { Text("翻譯名稱（選填）") },
-                    )
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = primary,
+                    onValueChange = { primary = it },
+                    label = { Text("顯示名稱（原文）") },
+                )
+                OutlinedTextField(
+                    value = secondary,
+                    onValueChange = { secondary = it },
+                    label = { Text("翻譯名稱（選填）") },
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(
+                        onClick = { onToggleMark(primary, secondary) },
+                        enabled = primary.isNotBlank(),
+                    ) {
+                        Text(if (isMarked) "★ 取消標記" else "☆ 標記這個單字")
+                    }
+                    TextButton(
+                        onClick = {
+                            val word = secondary.ifBlank { primary }
+                            if (word.isNotBlank()) onOpenDictionary(word)
+                        },
+                        enabled = primary.isNotBlank() || secondary.isNotBlank(),
+                    ) {
+                        Text("查字典")
+                    }
                 }
             }
         },
@@ -368,7 +433,7 @@ private fun LanguageDialog(
         onDismissRequest = onDismiss,
         title = { Text("翻譯成什麼語言？") },
         text = {
-            androidx.compose.foundation.layout.Column {
+            Column {
                 Text("直接輸入語言名稱即可，例如 English、日文、韓文、西班牙文", fontSize = 12.sp)
                 OutlinedTextField(
                     value = text,
@@ -379,6 +444,41 @@ private fun LanguageDialog(
         },
         confirmButton = { TextButton(onClick = { onConfirm(text) }) { Text("確定") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
+}
+
+@Composable
+private fun MarkedWordsDialog(
+    words: List<MarkedWord>,
+    onDismiss: () -> Unit,
+    onRemove: (primary: String) -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("標記過的單字") },
+        text = {
+            if (words.isEmpty()) {
+                Text("還沒有標記任何單字。長按一個框，在跳出的對話框裡可以標記。")
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    words.forEach { word ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            val display = if (!word.secondary.isNullOrBlank()) {
+                                "${word.primary}  ${word.secondary}"
+                            } else {
+                                word.primary
+                            }
+                            Text(text = display)
+                            TextButton(onClick = { onRemove(word.primary) }) { Text("移除") }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("關閉") } },
     )
 }
 
