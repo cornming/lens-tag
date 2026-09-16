@@ -90,6 +90,19 @@
   設定走。調整不需要重開相機，設定值是透過 `AnalysisSettings` 這個可變容器
   即時傳給 `ObjectAnalyzer`（跟 VR 模式的 `FrameSink` 是同一種做法）
 
+- **拍照辨識模式**：上方「拍照辨識」按鈕會用 `ImageCapture` 拍一張高解析度
+  照片，畫面凍結，對整張照片重跑一次偵測（`SINGLE_IMAGE_MODE`，比即時用的
+  `STREAM_MODE` 更仔細），然後可以慢慢操作：
+  - 點灰框 → 辨識那個物件；已經辨識過的點一下會唸出來
+  - 長按框 → 命名／標記／查字典
+  - 直接在畫面上拖曳 → 圈出任意範圍馬上辨識（藍框），自動偵測漏掉的東西、
+    或想辨識某個局部細節時用
+  - 「重拍」拍新的一張、「回到即時」退出這個模式
+
+  刻意用 `ImageCapture` 拍新的一張，而不是凍結即時分析用的那張 640x480——
+  拍照模式的重點就是可以圈小塊區域，解析度不能將就。照片用 FIT_CENTER 完整
+  顯示（不像即時預覽那樣裁掉邊緣），因為想圈的東西可能剛好在邊上。
+
 ## 已知問題修正紀錄
 
 - **框歪掉**：ML Kit 回傳的 boundingBox 是「旋轉後」座標系，但一開始拿來
@@ -150,7 +163,9 @@ APK 之前會先跑（見 `.github/workflows/release.yml`），測試沒過就�
 時間去組 APK，也會跟建置失敗一樣自動開 issue 附上錯誤訊息。
 
 **測得到的**：有明確對錯答案的純邏輯——
-- 座標轉換數學（`PreviewTransformTest`，「框歪掉」那個 bug 的根源）
+- 座標轉換數學（`PreviewTransformTest`，「框歪掉」那個 bug 的根源），
+  包含拍照模式的 FIT_CENTER 轉換、以及圈選用的反向換算
+- 圈選框的正規化與夾範圍（`BoxTest`，往任意方向拖、圈到照片外面的情況）
 - 靜止/移動的穩定度判斷（`StabilityTrackerTest`）
 - Release tag 的版號解析（`UpdateCheckerTest`）
 - 標記單字的 JSON 編解碼、toggle 語義（`MarkedWordsCodecTest`）

@@ -1,6 +1,7 @@
 package com.cornming.lenstag.geometry
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -54,6 +55,48 @@ class PreviewTransformTest {
         val box = Box(left = 100f, top = 100f, right = 200f, bottom = 300f)
         val result = transform.apply(box)
         assertEquals(box.width / box.height, result.width / result.height, DELTA)
+    }
+
+    @Test
+    fun `fitTransform shows the whole image with letterboxing instead of cropping`() {
+        // source 100x200（直立），view 300x300（正方形）。FIT 要整張看得見，
+        // 所以縮放取較小的那個（300/200 = 1.5），左右留白。
+        val transform = fitTransform(
+            sourceWidth = 100,
+            sourceHeight = 200,
+            viewWidth = 300f,
+            viewHeight = 300f,
+        )
+        val whole = transform.apply(Box(0f, 0f, 100f, 200f))
+        assertEquals(75f, whole.left, DELTA) // (300 - 150) / 2
+        assertEquals(0f, whole.top, DELTA)
+        assertEquals(225f, whole.right, DELTA)
+        assertEquals(300f, whole.bottom, DELTA)
+    }
+
+    @Test
+    fun `fitTransform never pushes content outside the view`() {
+        // 跟 previewTransform（FILL_CENTER，會裁掉溢出的部分）最關鍵的差別：
+        // FIT 的結果一定完整落在畫面內，不會有負座標。
+        val transform = fitTransform(480, 640, 1080f, 2280f)
+        val whole = transform.apply(Box(0f, 0f, 480f, 640f))
+        assertTrue(whole.left >= -DELTA)
+        assertTrue(whole.top >= -DELTA)
+        assertTrue(whole.right <= 1080f + DELTA)
+        assertTrue(whole.bottom <= 2280f + DELTA)
+    }
+
+    @Test
+    fun `invert undoes apply, so a circled screen area maps back to photo coordinates`() {
+        // 拍照模式使用者圈選時走的路徑：圈出來的是螢幕座標，要換算回照片座標
+        // 才能拿去裁切。apply 之後再 invert 應該回到原點。
+        val transform = fitTransform(480, 640, 1080f, 2280f)
+        val original = Box(left = 120f, top = 80f, right = 300f, bottom = 400f)
+        val roundTripped = transform.invert(transform.apply(original))
+        assertEquals(original.left, roundTripped.left, DELTA)
+        assertEquals(original.top, roundTripped.top, DELTA)
+        assertEquals(original.right, roundTripped.right, DELTA)
+        assertEquals(original.bottom, roundTripped.bottom, DELTA)
     }
 
     private companion object {

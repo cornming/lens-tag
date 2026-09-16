@@ -23,6 +23,18 @@ class PreviewTransform(
         right = box.right * scale + offsetX,
         bottom = box.bottom * scale + offsetY,
     )
+
+    /**
+     * apply 的反向操作：螢幕座標 -> 來源影像座標。
+     * 拍照模式讓使用者用手指圈一塊區域時，圈出來的是螢幕座標，但要拿去裁切
+     * 原始照片，就得換算回照片自己的座標系。
+     */
+    fun invert(box: Box) = Box(
+        left = (box.left - offsetX) / scale,
+        top = (box.top - offsetY) / scale,
+        right = (box.right - offsetX) / scale,
+        bottom = (box.bottom - offsetY) / scale,
+    )
 }
 
 fun previewTransform(
@@ -32,6 +44,26 @@ fun previewTransform(
     viewHeight: Float,
 ): PreviewTransform {
     val scale = maxOf(viewWidth / sourceWidth, viewHeight / sourceHeight)
+    return PreviewTransform(
+        scale = scale,
+        offsetX = (viewWidth - sourceWidth * scale) / 2f,
+        offsetY = (viewHeight - sourceHeight * scale) / 2f,
+    )
+}
+
+/**
+ * FIT_CENTER 版本：整張影像完整顯示在畫面內（等比例縮到放得下為止），
+ * 四周可能留黑邊。拍照模式用這個而不是 previewTransform——拍下來的照片
+ * 應該完整看到，不該像即時預覽那樣為了填滿畫面把邊緣裁掉，不然使用者
+ * 想圈的東西可能剛好在被裁掉的那一塊。
+ */
+fun fitTransform(
+    sourceWidth: Int,
+    sourceHeight: Int,
+    viewWidth: Float,
+    viewHeight: Float,
+): PreviewTransform {
+    val scale = minOf(viewWidth / sourceWidth, viewHeight / sourceHeight)
     return PreviewTransform(
         scale = scale,
         offsetX = (viewWidth - sourceWidth * scale) / 2f,

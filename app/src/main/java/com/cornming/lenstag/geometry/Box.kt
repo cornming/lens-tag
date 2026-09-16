@@ -22,6 +22,26 @@ data class Box(
     val centerY: Float get() = (top + bottom) / 2f
 
     fun contains(x: Float, y: Float): Boolean = x in left..right && y in top..bottom
+
+    /**
+     * 正規化成 left <= right、top <= bottom。
+     * 使用者用手指圈選時可以往任何方向拖（例如從右下拖到左上），直接拿起點
+     * 終點組成的 Box 會是「負的」，寬高變負數，後面裁切就會出錯。
+     */
+    fun normalized(): Box = Box(
+        left = minOf(left, right),
+        top = minOf(top, bottom),
+        right = maxOf(left, right),
+        bottom = maxOf(top, bottom),
+    )
+
+    /** 把座標夾在 0..maxWidth / 0..maxHeight 範圍內，避免圈到影像外面。 */
+    fun clampedTo(maxWidth: Int, maxHeight: Int): Box = Box(
+        left = left.coerceIn(0f, maxWidth.toFloat()),
+        top = top.coerceIn(0f, maxHeight.toFloat()),
+        right = right.coerceIn(0f, maxWidth.toFloat()),
+        bottom = bottom.coerceIn(0f, maxHeight.toFloat()),
+    )
 }
 
 /** ML Kit／CameraX 回傳的都是 android.graphics.Rect，這裡轉成我們自己的 Box。 */

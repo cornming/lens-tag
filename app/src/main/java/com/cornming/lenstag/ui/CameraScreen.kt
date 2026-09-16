@@ -1,11 +1,16 @@
 package com.cornming.lenstag.ui
 
 import android.content.Intent
+import android.graphics.Bitmap
 import android.net.Uri
+import android.util.Log
 import android.util.Size as AndroidSize
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ExperimentalGetImage
 import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.ImageCapture
+import androidx.camera.core.ImageCaptureException
+import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
@@ -39,6 +44,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -65,6 +71,9 @@ import com.cornming.lenstag.camera.AnalysisSettings
 import com.cornming.lenstag.camera.DetectionResult
 import com.cornming.lenstag.camera.FrameSink
 import com.cornming.lenstag.camera.ObjectAnalyzer
+import com.cornming.lenstag.capture.StillImageDetector
+import com.cornming.lenstag.capture.cropBitmap
+import com.cornming.lenstag.capture.rotatedBy
 import com.cornming.lenstag.data.MarkedWord
 import com.cornming.lenstag.data.MarkedWordsStore
 import com.cornming.lenstag.geometry.Box as GeomBox
@@ -89,8 +98,8 @@ private const val DWELL_SHORT_MS = 1500L
 /** 在短停留之後，繼續停留到這個累積時間算「長停留」（開命名/標記對話框，等同一般模式長按）。 */
 private const val DWELL_LONG_MS = 3000L
 
-/** 一般模式／VR cardboard 模式。 */
-private enum class ViewMode { NORMAL, VR_CARDBOARD }
+/** 一般（即時）模式／VR cardboard 模式／拍照後的靜止辨識模式。 */
+private enum class ViewMode { NORMAL, VR_CARDBOARD, PHOTO }
 
 /** 畫面上一個框的當前狀態（含最後一次看到的時間，用來做寬限期）。 */
 private data class TrackedBox(
@@ -165,10 +174,101 @@ fun CameraScreen() {
         markedWords = markedWordsStore.getAll()
     }
 
-    // 一般 / VR cardboard 模式。frameSink 只有 VR 模式才會有 callback，
+    // 一般 / VR cardboard / 拍照模式。frameSink 只有 VR 模式才會有 callback，
     // 平常模式 ObjectAnalyzer 完全不會多做整影格 Bitmap 轉換那筆開銷。
     var viewMode by remember { mutableStateOf(ViewMode.NORMAL) }
     val frameSink = remember { FrameSink() }
+
+    // 拍照模式：拍下來的照片、上面的可辨識區域、以及拍完後偵測中的狀態。
+    // 用 ImageCapture 另外拍一張高解析度照片，而不是凍結即時分析用的那張
+    // 640x480——拍照模式的重點就是可以慢慢圈、圈小塊區域也還看得清楚，
+    // 解析度不能將就。
+    val imageCapture = remember { mutableStateOf<ImageCapture?>(null) }
+    val stillDetector = remember { StillImageDetector() }
+    var photoBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var photoRegions by remember { mutableStateOf<List<PhotoRegion>>(emptyList()) }
+    var nextRegionId by remember { mutableStateOf(0) }
+    var photoDetecting by remember { mutableStateOf(false) }
+    var renamingPhotoRegionId by remember { mutableStateOf<Int?>(null) }
+
+    /** 對拍照模式裡的某一塊區域跑 Gemini Nano 辨識。 */
+    fun recognizePhotoRegion(regionId: Int) {
+        val photo = photoBitmap ?: return
+        val region = photoRegions.firstOrNull { it.id == regionId } ?: return
+        if (region.label is LabelState.Named) return // 已經有名字就不重跑
+        val cropped = cropBitmap(photo, region.box) ?: return
+
+        photoRegions = photoRegions.map {
+            if (it.id == regionId) it.copy(label = LabelState.Recognizing) else it
+        }
+        val languageAtRequestTime = secondaryLanguage
+        scope.launch {
+            val recognized = if (recognizer.ensureReady()) {
+                recognizer.recognize(cropped, languageAtRequestTime)
+            } else {
+                null
+            }
+            photoRegions = photoRegions.map {
+                if (it.id == regionId) {
+                    it.copy(
+                        label = recognized
+                            ?.let { r -> LabelState.Named(r.primary, r.secondary) }
+                            ?: LabelState.Unknown,
+                    )
+                } else {
+                    it
+                }
+            }
+        }
+    }
+
+    fun takePhoto() {
+        val capture = imageCapture.value ?: return
+        capture.takePicture(
+            ContextCompat.getMainExecutor(context),
+            object : ImageCapture.OnImageCapturedCallback() {
+                override fun onCaptureSuccess(image: ImageProxy) {
+                    val bitmap = try {
+                        image.toBitmap().rotatedBy(image.imageInfo.rotationDegrees)
+                    } catch (e: Exception) {
+                        Log.e("CameraScreen", "拍照後轉檔失敗", e)
+                        null
+                    } finally {
+                        image.close()
+                    }
+                    if (bitmap == null) return
+
+                    photoBitmap = bitmap
+                    photoRegions = emptyList()
+                    viewMode = ViewMode.PHOTO
+                    photoDetecting = true
+
+                    // 對整張照片重跑一次偵測（SINGLE_IMAGE_MODE），框的座標系
+                    // 就跟照片本身一致，不用處理即時分析解析度的換算誤差
+                    scope.launch {
+                        val boxes = stillDetector.detect(bitmap)
+                        photoRegions = boxes.mapIndexed { i, b ->
+                            PhotoRegion(id = i, box = b, label = LabelState.Unknown)
+                        }
+                        nextRegionId = boxes.size
+                        photoDetecting = false
+                    }
+                }
+
+                override fun onError(exception: ImageCaptureException) {
+                    Log.e("CameraScreen", "拍照失敗", exception)
+                }
+            },
+        )
+    }
+
+    fun exitPhotoMode() {
+        viewMode = ViewMode.NORMAL
+        photoBitmap = null
+        photoRegions = emptyList()
+        renamingPhotoRegionId = null
+    }
+
     var latestFrame by remember { mutableStateOf<ImageBitmap?>(null) }
     var vrContainerSize by remember { mutableStateOf(IntSize.Zero) }
     // 準星停留進度，0f~1f，只在 VR 模式下有意義；gazePastShort 代表已經過了
@@ -301,6 +401,13 @@ fun CameraScreen() {
                         .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                         .build()
 
+                    // 拍照模式用的 use case。Preview + ImageAnalysis + ImageCapture
+                    // 這個三件組是 CameraX 官方支援的標準組合。
+                    val capture = ImageCapture.Builder()
+                        .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+                        .build()
+                    imageCapture.value = capture
+
                     analysis.setAnalyzer(
                         ContextCompat.getMainExecutor(ctx),
                         ObjectAnalyzer(
@@ -335,6 +442,7 @@ fun CameraScreen() {
                         CameraSelector.DEFAULT_BACK_CAMERA,
                         preview,
                         analysis,
+                        capture,
                     )
                 }, ContextCompat.getMainExecutor(ctx))
 
@@ -342,7 +450,35 @@ fun CameraScreen() {
             },
         )
 
-        if (viewMode == ViewMode.NORMAL) {
+        val currentPhoto = photoBitmap
+        if (viewMode == ViewMode.PHOTO && currentPhoto != null) {
+            PhotoModeScreen(
+                photo = currentPhoto,
+                regions = photoRegions,
+                displayMode = displayMode,
+                textMeasurer = textMeasurer,
+                onRegionTapped = { region ->
+                    // 還沒辨識過就先辨識；已經有名字了就唸出來（跟即時模式一致）
+                    when (val label = region.label) {
+                        is LabelState.Named -> speaker.speak(label, displayMode, secondaryLanguage)
+                        else -> recognizePhotoRegion(region.id)
+                    }
+                },
+                onRegionLongPressed = { region -> renamingPhotoRegionId = region.id },
+                onManualRegion = { box ->
+                    // 使用者自己圈的範圍：立刻加進清單並馬上辨識，不用再點一次
+                    val id = nextRegionId
+                    nextRegionId = id + 1
+                    photoRegions = photoRegions + PhotoRegion(
+                        id = id,
+                        box = box,
+                        label = LabelState.Unknown,
+                        manual = true,
+                    )
+                    recognizePhotoRegion(id)
+                },
+            )
+        } else if (viewMode == ViewMode.NORMAL) {
             Canvas(
                 modifier = Modifier
                     .fillMaxSize()
@@ -453,16 +589,47 @@ fun CameraScreen() {
             Button(onClick = { showingMarkedWords = true }) {
                 Text("單字本 (${markedWords.size})")
             }
-            Button(onClick = { editingFrequency = true }) {
-                Text("更新頻率")
+            if (viewMode == ViewMode.PHOTO) {
+                Button(onClick = { takePhoto() }) {
+                    Text("重拍")
+                }
+                Button(onClick = { exitPhotoMode() }) {
+                    Text("回到即時")
+                }
+            } else {
+                Button(onClick = { takePhoto() }) {
+                    Text("拍照辨識")
+                }
+                Button(onClick = { editingFrequency = true }) {
+                    Text("更新頻率")
+                }
+                Button(
+                    onClick = {
+                        viewMode = if (viewMode == ViewMode.NORMAL) {
+                            ViewMode.VR_CARDBOARD
+                        } else {
+                            ViewMode.NORMAL
+                        }
+                    },
+                ) {
+                    Text(if (viewMode == ViewMode.NORMAL) "VR 模式" else "退出 VR")
+                }
             }
-            Button(
-                onClick = {
-                    viewMode = if (viewMode == ViewMode.NORMAL) ViewMode.VR_CARDBOARD else ViewMode.NORMAL
+        }
+
+        if (viewMode == ViewMode.PHOTO) {
+            Text(
+                text = if (photoDetecting) {
+                    "偵測中…"
+                } else {
+                    "點框辨識／已辨識的點一下會唸出來；長按可命名標記；直接拖曳可圈出任意範圍辨識"
                 },
-            ) {
-                Text(if (viewMode == ViewMode.NORMAL) "VR 模式" else "退出 VR")
-            }
+                fontSize = 12.sp,
+                color = Color.White,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(16.dp),
+            )
         }
 
         renamingId?.let { id ->
@@ -481,6 +648,41 @@ fun CameraScreen() {
                         )
                     }
                     renamingId = null
+                },
+                onToggleMark = { primary, secondary ->
+                    toggleMark(primary, secondary.ifBlank { null })
+                },
+                onOpenDictionary = { word ->
+                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(dictionaryUrl(word))))
+                },
+            )
+        }
+
+        renamingPhotoRegionId?.let { id ->
+            val region = photoRegions.firstOrNull { it.id == id }
+            val current = region?.label as? LabelState.Named
+            RenameDialog(
+                initialPrimary = current?.primary.orEmpty(),
+                initialSecondary = current?.secondary.orEmpty(),
+                markedPrimaries = remember(markedWords) { markedWords.map { it.primary }.toSet() },
+                onDismiss = { renamingPhotoRegionId = null },
+                onConfirm = { primary, secondary ->
+                    if (primary.isNotBlank()) {
+                        photoRegions = photoRegions.map {
+                            if (it.id == id) {
+                                it.copy(
+                                    label = LabelState.Named(
+                                        primary = primary,
+                                        secondary = secondary.ifBlank { null },
+                                        custom = true,
+                                    ),
+                                )
+                            } else {
+                                it
+                            }
+                        }
+                    }
+                    renamingPhotoRegionId = null
                 },
                 onToggleMark = { primary, secondary ->
                     toggleMark(primary, secondary.ifBlank { null })
