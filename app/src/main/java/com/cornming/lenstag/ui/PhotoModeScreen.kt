@@ -2,9 +2,9 @@ package com.cornming.lenstag.ui
 
 import android.graphics.Bitmap
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
@@ -19,19 +19,21 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.unit.sp
 import com.cornming.lenstag.geometry.Box as GeomBox
-import com.cornming.lenstag.geometry.fitTransform
+import com.cornming.lenstag.geometry.photoTransform
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
 /** 圈選的框至少要這麼大（螢幕像素）才算數，避免手指輕輕一滑就產生一堆小框。 */
 private const val MIN_DRAG_SIZE_PX = 40f
+
+private const val MIN_ZOOM = 1f
+private const val MAX_ZOOM = 6f
 
 /**
  * 拍照模式下畫面上的一塊區域：可能是 ML Kit 自動偵測出來的，
@@ -46,16 +48,20 @@ data class PhotoRegion(
 )
 
 /**
- * 拍照模式：畫面是靜止的一張照片，上面疊著可辨識的框。
+ * 拍照模式：畫面是靜止的一張照片，滿版顯示，可以雙指縮放/拖曳，
+ * 上面疊著可辨識的框。
  *
- * 跟即時模式的差別（也是這個模式存在的理由）：畫面不會動，所以可以慢慢看、
- * 慢慢圈。兩種互動方式：
- * - 點一下自動偵測出來的框 -> 辨識那個物件
- * - 用手指拖曳圈出任意範圍 -> 辨識圈起來的東西（自動偵測漏掉、或想辨識
- *   某個局部細節時用）
+ * 互動方式（照片是靜止的，所以可以慢慢操作，這也是這個模式存在的理由）：
+ * - 雙指捏合縮放、雙指拖曳移動畫面
+ * - 點框 -> 辨識；已辨識過的點一下會唸出來
+ * - 長按框 -> 命名／標記／查字典
+ * - 單指拖曳 -> 圈出任意範圍辨識（自動偵測漏掉、或想辨識局部細節時用）
  *
- * 照片用 FIT_CENTER 完整顯示（不像即時預覽那樣裁掉邊緣），因為使用者想圈
- * 的東西可能剛好在邊上；對應的座標換算用 geometry.fitTransform。
+ * 單指拖曳拿來圈選，雙指才是縮放平移——這樣圈選不需要額外切換模式，
+ * 但也不會跟縮放打架。
+ *
+ * 照片本身不用 Image composable 畫，而是跟框一起畫在同一個 Canvas 上，
+ * 這樣照片和框保證用同一個座標轉換，縮放時絕對不會有框跟照片對不齊的問題。
  */
 @Composable
 fun PhotoModeScreen(
@@ -67,30 +73,39 @@ fun PhotoModeScreen(
     onRegionLongPressed: (PhotoRegion) -> Unit,
     onManualRegion: (GeomBox) -> Unit,
 ) {
-    // 使用者正在拖曳中的框（螢幕座標），放開手才會變成正式的 region
+    var zoom by remember(photo) { mutableStateOf(1f) }
+    var pan by remember(photo) { mutableStateOf(Offset.Zero) }
+
+    // 使用者正在拖曳中的圈選框（螢幕座標），放開手才會變成正式的 region
     var dragStart by remember { mutableStateOf<Offset?>(null) }
     var dragCurrent by remember { mutableStateOf<Offset?>(null) }
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        Image(
-            bitmap = photo.asImageBitmap(),
-            contentDescription = null,
-            modifier = Modifier.fillMaxSize(),
-            contentScale = ContentScale.Fit,
-        )
+    val image = remember(photo) { photo.asImageBitmap() }
 
+    Box(modifier = Modifier.fillMaxSize()) {
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
+                // 雙指：縮放與平移
+                .pointerInput(photo) {
+                    detectTransformGestures { _, panChange, zoomChange, _ ->
+                        zoom = (zoom * zoomChange).coerceIn(MIN_ZOOM, MAX_ZOOM)
+                        pan = if (zoom <= MIN_ZOOM) {
+                            // 縮回原始大小就歸位，避免照片被拖到畫面外找不回來
+                            Offset.Zero
+                        } else {
+                            pan + panChange
+                        }
+                    }
+                }
+                // 單指拖曳：圈選範圍
                 .pointerInput(photo) {
                     detectDragGestures(
                         onDragStart = { offset ->
                             dragStart = offset
                             dragCurrent = offset
                         },
-                        onDrag = { change, _ ->
-                            dragCurrent = change.position
-                        },
+                        onDrag = { change, _ -> dragCurrent = change.position },
                         onDragEnd = {
                             val start = dragStart
                             val end = dragCurrent
@@ -105,13 +120,12 @@ fun PhotoModeScreen(
                                 return@detectDragGestures
                             }
 
-                            val transform = fitTransform(
-                                photo.width,
-                                photo.height,
-                                size.width.toFloat(),
-                                size.height.toFloat(),
+                            val transform = photoTransform(
+                                photo.width, photo.height,
+                                size.width.toFloat(), size.height.toFloat(),
+                                zoom, pan.x, pan.y,
                             )
-                            // 圈出來的是螢幕座標，換算回照片自己的座標系才能拿去裁切
+                            // 圈出來的是螢幕座標，換算回照片座標系才能拿去裁切
                             val inPhoto = transform
                                 .invert(GeomBox(start.x, start.y, end.x, end.y).normalized())
                                 .clampedTo(photo.width, photo.height)
@@ -123,44 +137,31 @@ fun PhotoModeScreen(
                         },
                     )
                 }
-                .pointerInput(photo, regions) {
+                .pointerInput(photo, regions, zoom, pan) {
                     detectTapGestures(
-                        onTap = { tap ->
-                            val transform = fitTransform(
-                                photo.width,
-                                photo.height,
-                                size.width.toFloat(),
-                                size.height.toFloat(),
-                            )
-                            val hit = regions
-                                .map { it to transform.apply(it.box) }
-                                .filter { (_, r) -> r.contains(tap.x, tap.y) }
-                                .minByOrNull { (_, r) -> r.width * r.height }
-                                ?.first
-                            hit?.let(onRegionTapped)
-                        },
-                        onLongPress = { tap ->
-                            val transform = fitTransform(
-                                photo.width,
-                                photo.height,
-                                size.width.toFloat(),
-                                size.height.toFloat(),
-                            )
-                            val hit = regions
-                                .map { it to transform.apply(it.box) }
-                                .filter { (_, r) -> r.contains(tap.x, tap.y) }
-                                .minByOrNull { (_, r) -> r.width * r.height }
-                                ?.first
-                            hit?.let(onRegionLongPressed)
-                        },
+                        onTap = { tap -> hitRegion(regions, photo, size.width.toFloat(), size.height.toFloat(), zoom, pan, tap)?.let(onRegionTapped) },
+                        onLongPress = { tap -> hitRegion(regions, photo, size.width.toFloat(), size.height.toFloat(), zoom, pan, tap)?.let(onRegionLongPressed) },
                     )
                 },
         ) {
-            val transform = fitTransform(
-                photo.width,
-                photo.height,
-                size.width,
-                size.height,
+            val transform = photoTransform(
+                photo.width, photo.height,
+                size.width, size.height,
+                zoom, pan.x, pan.y,
+            )
+
+            // 照片跟框畫在同一個 Canvas、用同一個轉換，縮放時保證對得齊
+            val photoRect = transform.apply(GeomBox(0f, 0f, photo.width.toFloat(), photo.height.toFloat()))
+            drawImage(
+                image = image,
+                dstOffset = androidx.compose.ui.unit.IntOffset(
+                    photoRect.left.toInt(),
+                    photoRect.top.toInt(),
+                ),
+                dstSize = androidx.compose.ui.unit.IntSize(
+                    photoRect.width.toInt().coerceAtLeast(1),
+                    photoRect.height.toInt().coerceAtLeast(1),
+                ),
             )
 
             regions.forEach { region ->
@@ -202,7 +203,7 @@ fun PhotoModeScreen(
                 )
             }
 
-            // 正在拖曳中的框，用虛線感的細框即時顯示，放開手才會變成正式的 region
+            // 正在圈選中的框，即時顯示，放開手才會變成正式的 region
             val start = dragStart
             val current = dragCurrent
             if (start != null && current != null) {
@@ -216,4 +217,26 @@ fun PhotoModeScreen(
             }
         }
     }
+}
+
+/** 找出點擊位置底下的區域，優先選比較小的框（比較符合直覺）。 */
+private fun hitRegion(
+    regions: List<PhotoRegion>,
+    photo: Bitmap,
+    viewWidth: Float,
+    viewHeight: Float,
+    zoom: Float,
+    pan: Offset,
+    tap: Offset,
+): PhotoRegion? {
+    val transform = photoTransform(
+        photo.width, photo.height,
+        viewWidth, viewHeight,
+        zoom, pan.x, pan.y,
+    )
+    return regions
+        .map { it to transform.apply(it.box) }
+        .filter { (_, r) -> r.contains(tap.x, tap.y) }
+        .minByOrNull { (_, r) -> r.width * r.height }
+        ?.first
 }

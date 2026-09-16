@@ -70,3 +70,35 @@ fun fitTransform(
         offsetY = (viewHeight - sourceHeight * scale) / 2f,
     )
 }
+
+/**
+ * 拍照模式用的轉換：先 FIT_CENTER 讓整張照片可見，再疊上使用者的縮放與拖曳。
+ *
+ * 縮放以畫面中心為基準點（雙指捏合時視覺上最自然），公式推導：
+ *   fit 之後：  s = p * fitScale + fitOffset
+ *   以中心縮放：f = (s - c) * zoom + c + pan
+ *   展開合併：  f = p * (fitScale * zoom) + (fitOffset * zoom - c * zoom + c + pan)
+ * 所以最終還是一個單純的 scale + offset，可以直接包成 PreviewTransform，
+ * 框的繪製和圈選的反向換算就都自動跟著縮放走，不用各自處理。
+ */
+fun photoTransform(
+    sourceWidth: Int,
+    sourceHeight: Int,
+    viewWidth: Float,
+    viewHeight: Float,
+    zoom: Float,
+    panX: Float,
+    panY: Float,
+): PreviewTransform {
+    val fitScale = minOf(viewWidth / sourceWidth, viewHeight / sourceHeight)
+    val fitOffsetX = (viewWidth - sourceWidth * fitScale) / 2f
+    val fitOffsetY = (viewHeight - sourceHeight * fitScale) / 2f
+    val centerX = viewWidth / 2f
+    val centerY = viewHeight / 2f
+
+    return PreviewTransform(
+        scale = fitScale * zoom,
+        offsetX = fitOffsetX * zoom - centerX * zoom + centerX + panX,
+        offsetY = fitOffsetY * zoom - centerY * zoom + centerY + panY,
+    )
+}

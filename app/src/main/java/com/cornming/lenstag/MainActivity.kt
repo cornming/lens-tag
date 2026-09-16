@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.cornming.lenstag.ui.CameraScreen
 import com.cornming.lenstag.update.ApkInstaller
+import com.cornming.lenstag.update.DownloadOutcome
 import com.cornming.lenstag.update.UpdateChecker
 import com.cornming.lenstag.update.UpdateInfo
 import kotlinx.coroutines.launch
@@ -91,6 +92,7 @@ private fun LensTagApp() {
     // 下載中的進度（0f~1f；null 表示還不知道總大小，畫面上顯示不確定的跑動進度條）
     var downloading by remember { mutableStateOf(false) }
     var downloadProgress by remember { mutableStateOf<Float?>(null) }
+    var downloadFailed by remember { mutableStateOf(false) }
 
     // Android 8+ 第一次安裝來源沒授權時，要先跳系統設定頁讓使用者允許；
     // 記住當下要裝的 APK 網址，回來後如果授權成功就直接接著下載。
@@ -100,10 +102,14 @@ private fun LensTagApp() {
         updateInfo = null
         downloading = true
         downloadProgress = null
+        downloadFailed = false
         val id = installer.download(apkUrl)
         scope.launch {
-            installer.observeProgress(id) { progress -> downloadProgress = progress }
+            // observeProgress 在下載成功時會直接跳系統安裝畫面，
+            // 不用等 DownloadManager 的廣播（那條路徑留著當備援）
+            val outcome = installer.observeProgress(id) { progress -> downloadProgress = progress }
             downloading = false
+            downloadFailed = outcome == DownloadOutcome.FAILED
         }
     }
 
@@ -183,6 +189,17 @@ private fun LensTagApp() {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 }
             }
+        }
+
+        if (downloadFailed) {
+            AlertDialog(
+                onDismissRequest = { downloadFailed = false },
+                title = { Text("下載失敗") },
+                text = { Text("更新檔沒有下載完成，可以稍後再試一次。") },
+                confirmButton = {
+                    TextButton(onClick = { downloadFailed = false }) { Text("知道了") }
+                },
+            )
         }
     }
 }

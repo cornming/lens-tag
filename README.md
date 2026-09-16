@@ -90,18 +90,36 @@
   設定走。調整不需要重開相機，設定值是透過 `AnalysisSettings` 這個可變容器
   即時傳給 `ObjectAnalyzer`（跟 VR 模式的 `FrameSink` 是同一種做法）
 
-- **拍照辨識模式**：上方「拍照辨識」按鈕會用 `ImageCapture` 拍一張高解析度
+- **拍照辨識模式**：「拍照辨識」按鈕會用 `ImageCapture` 拍一張高解析度
   照片，畫面凍結，對整張照片重跑一次偵測（`SINGLE_IMAGE_MODE`，比即時用的
   `STREAM_MODE` 更仔細），然後可以慢慢操作：
-  - 點灰框 → 辨識那個物件；已經辨識過的點一下會唸出來
+  - 雙指捏合縮放、雙指拖曳移動畫面（放大看細節）
+  - 點框 → 辨識那個物件；已經辨識過的點一下會唸出來
   - 長按框 → 命名／標記／查字典
-  - 直接在畫面上拖曳 → 圈出任意範圍馬上辨識（藍框），自動偵測漏掉的東西、
+  - 單指拖曳 → 圈出任意範圍馬上辨識（藍框），自動偵測漏掉的東西、
     或想辨識某個局部細節時用
   - 「重拍」拍新的一張、「回到即時」退出這個模式
+  - 這個模式的控制列在畫面**下方**（像相機 App 那樣，拇指好按，也不會擋住
+    照片上緣的框）；即時／VR 模式維持在上方，因為那些情境常常要舉著手機操作
 
   刻意用 `ImageCapture` 拍新的一張，而不是凍結即時分析用的那張 640x480——
-  拍照模式的重點就是可以圈小塊區域，解析度不能將就。照片用 FIT_CENTER 完整
-  顯示（不像即時預覽那樣裁掉邊緣），因為想圈的東西可能剛好在邊上。
+  拍照模式的重點就是可以圈小塊區域，解析度不能將就。照片跟框畫在同一個
+  `Canvas`、用同一個座標轉換（`geometry.photoTransform`），這樣縮放時保證
+  框跟照片對得齊，不會各自飄移。
+
+- **辨識方式可選（手機內建 AI / Azure AI Foundry）**：「辨識：…」按鈕可以切換。
+  - **手機內建 AI（Gemini Nano）**：離線、免費，但只有部分機型支援
+  - **Azure AI Foundry**：填端點網址（含 api-version）、API Key、模型名稱，
+    辨識準確度較高、不挑機型，代價是要網路而且每次呼叫有成本
+  - **依任務複雜度調度模型**：自動偵測框出來的單一物件算簡單任務（`SIMPLE`），
+    派一般模型；使用者在拍照模式自己圈的範圍算複雜任務（`COMPLEX`），派較強
+    的模型——會自己動手圈通常正是因為自動偵測沒框到，可能是局部細節、文字、
+    或多個東西疊在一起的場景。複雜模型沒填就退回用一般那個
+  - 注意：如果端點是 Azure OpenAI 形式（模型綁在網址的 deployment 裡），
+    body 帶的 model 會被忽略，兩個模型欄位不會有分流效果；要真的分流得用
+    Foundry Models 形式的端點
+  - 兩種辨識器都實作同一個 `Recognizer` 介面，所以切換辨識方式不需要動任何
+    呼叫端的程式碼
 
 ## 已知問題修正紀錄
 
@@ -109,6 +127,12 @@
   換算的來源影像寬高用的是旋轉前的 `imageProxy.width/height`，手機直立時
   （rotation 90/270）寬高剛好對調，導致框整個偏移。已在 `ObjectAnalyzer`
   裡依 rotation 交換寬高修正。
+- **下載完不會自動跳安裝**：`ApkInstaller` 註冊廣播接收器時用了
+  `RECEIVER_NOT_EXPORTED`，但 `DownloadManager` 的完成通知是**系統**送出的
+  廣播，對 App 來說算外部來源，用 NOT_EXPORTED 根本收不到。已改成
+  `RECEIVER_EXPORTED`，並且改成主要靠 `observeProgress` 輪詢到
+  `STATUS_SUCCESSFUL` 時直接跳安裝（更可靠），廣播留著當備援；兩條路徑都
+  有重複觸發保護，不會跳兩次。下載失敗現在也會跳訊息，不再只是進度條默默消失。
 
 ## 效能與發熱
 
@@ -164,7 +188,9 @@ APK 之前會先跑（見 `.github/workflows/release.yml`），測試沒過就�
 
 **測得到的**：有明確對錯答案的純邏輯——
 - 座標轉換數學（`PreviewTransformTest`，「框歪掉」那個 bug 的根源），
-  包含拍照模式的 FIT_CENTER 轉換、以及圈選用的反向換算
+  包含拍照模式的 FIT_CENTER 轉換、縮放平移後的座標換算、以及圈選用的反向換算
+- 辨識回覆解析、提示詞、模型調度（`RecognizerTest`）：模型不照格式回時的
+  容錯、Azure 請求內容組裝、回應解析、依複雜度選模型與退回邏輯
 - 圈選框的正規化與夾範圍（`BoxTest`，往任意方向拖、圈到照片外面的情況）
 - 靜止/移動的穩定度判斷（`StabilityTrackerTest`）
 - Release tag 的版號解析（`UpdateCheckerTest`）
@@ -193,6 +219,9 @@ APK 之前會先跑（見 `.github/workflows/release.yml`），測試沒過就�
 - `gradle/libs.versions.toml` 裡有幾個版本號（core-ktx、lifecycle-runtime-ktx、
   activity-compose）沒有實際查證，只是合理預設值；開 Android Studio 同步時
   讓它建議更新即可。
+- **Azure API Key 是明文存在 SharedPreferences 裡**。對這個 debug 用途的 App
+  可接受（其他 App 讀不到別人的 SharedPreferences），但如果之後要正式發布、
+  或手機已經 root，應該換成 `EncryptedSharedPreferences`。
 
 ## 建置
 

@@ -99,6 +99,57 @@ class PreviewTransformTest {
         assertEquals(original.bottom, roundTripped.bottom, DELTA)
     }
 
+    @Test
+    fun `photoTransform at zoom 1 with no pan matches plain fitTransform`() {
+        // 拍照模式一開啟就是這個狀態，應該跟單純的 FIT 顯示完全一樣
+        val fit = fitTransform(480, 640, 1080f, 2280f)
+        val photo = photoTransform(480, 640, 1080f, 2280f, zoom = 1f, panX = 0f, panY = 0f)
+        val box = Box(100f, 100f, 200f, 300f)
+        val a = fit.apply(box)
+        val b = photo.apply(box)
+        assertEquals(a.left, b.left, DELTA)
+        assertEquals(a.top, b.top, DELTA)
+        assertEquals(a.right, b.right, DELTA)
+        assertEquals(a.bottom, b.bottom, DELTA)
+    }
+
+    @Test
+    fun `zooming keeps the view centre anchored in place`() {
+        // 以畫面中心為基準縮放：正中心那一點放大後還是在正中心
+        val viewW = 1000f
+        val viewH = 2000f
+        val transform1 = photoTransform(500, 1000, viewW, viewH, zoom = 1f, panX = 0f, panY = 0f)
+        val transform3 = photoTransform(500, 1000, viewW, viewH, zoom = 3f, panX = 0f, panY = 0f)
+
+        // 找出在 zoom=1 時剛好落在畫面中心的那個照片座標點，用一個退化的框表示
+        val centreDot = transform1.invert(Box(viewW / 2f, viewH / 2f, viewW / 2f, viewH / 2f))
+        val afterZoom = transform3.apply(centreDot)
+
+        assertEquals(viewW / 2f, afterZoom.left, DELTA)
+        assertEquals(viewH / 2f, afterZoom.top, DELTA)
+    }
+
+    @Test
+    fun `panning shifts everything by exactly the pan amount`() {
+        val noPan = photoTransform(480, 640, 1080f, 2280f, zoom = 2f, panX = 0f, panY = 0f)
+        val panned = photoTransform(480, 640, 1080f, 2280f, zoom = 2f, panX = 50f, panY = -30f)
+        val box = Box(10f, 20f, 30f, 40f)
+        assertEquals(noPan.apply(box).left + 50f, panned.apply(box).left, DELTA)
+        assertEquals(noPan.apply(box).top - 30f, panned.apply(box).top, DELTA)
+    }
+
+    @Test
+    fun `invert still round-trips once zoom and pan are applied`() {
+        // 縮放後圈選仍然要能正確換算回照片座標，不然放大後圈的範圍會裁錯地方
+        val transform = photoTransform(480, 640, 1080f, 2280f, zoom = 2.5f, panX = 120f, panY = -80f)
+        val original = Box(left = 60f, top = 90f, right = 240f, bottom = 300f)
+        val roundTripped = transform.invert(transform.apply(original))
+        assertEquals(original.left, roundTripped.left, DELTA)
+        assertEquals(original.top, roundTripped.top, DELTA)
+        assertEquals(original.right, roundTripped.right, DELTA)
+        assertEquals(original.bottom, roundTripped.bottom, DELTA)
+    }
+
     private companion object {
         const val DELTA = 0.01f
     }

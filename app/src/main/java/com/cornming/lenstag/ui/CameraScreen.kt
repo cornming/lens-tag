@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
@@ -79,7 +80,13 @@ import com.cornming.lenstag.data.MarkedWordsStore
 import com.cornming.lenstag.geometry.Box as GeomBox
 import com.cornming.lenstag.geometry.PreviewTransform
 import com.cornming.lenstag.geometry.previewTransform
-import com.cornming.lenstag.recognize.ObjectRecognizer
+import com.cornming.lenstag.recognize.AzureFoundryRecognizer
+import com.cornming.lenstag.recognize.OnDeviceRecognizer
+import com.cornming.lenstag.recognize.RecognitionTask
+import com.cornming.lenstag.recognize.Recognizer
+import com.cornming.lenstag.recognize.RecognizerKind
+import com.cornming.lenstag.recognize.RecognizerSettings
+import com.cornming.lenstag.recognize.RecognizerSettingsStore
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.max
@@ -131,7 +138,17 @@ fun CameraScreen() {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
-    val recognizer = remember { ObjectRecognizer() }
+    // 辨識方式（手機內建 AI / Azure AI Foundry）。設定一改就換一個 Recognizer 實作，
+    // 呼叫端的程式碼完全不用動——這是把辨識抽成 Recognizer 介面的用意。
+    val settingsStore = remember { RecognizerSettingsStore(context) }
+    var recognizerSettings by remember { mutableStateOf(settingsStore.load()) }
+    var editingRecognizer by remember { mutableStateOf(false) }
+    val recognizer: Recognizer = remember(recognizerSettings) {
+        when (recognizerSettings.kind) {
+            RecognizerKind.ON_DEVICE -> OnDeviceRecognizer()
+            RecognizerKind.AZURE -> AzureFoundryRecognizer(recognizerSettings.azure)
+        }
+    }
     val textMeasurer = rememberTextMeasurer()
     val speaker = remember { Speaker(context) }
     DisposableEffect(Unit) {
@@ -191,7 +208,7 @@ fun CameraScreen() {
     var photoDetecting by remember { mutableStateOf(false) }
     var renamingPhotoRegionId by remember { mutableStateOf<Int?>(null) }
 
-    /** 對拍照模式裡的某一塊區域跑 Gemini Nano 辨識。 */
+    /** 對拍照模式裡的某一塊區域跑辨識。 */
     fun recognizePhotoRegion(regionId: Int) {
         val photo = photoBitmap ?: return
         val region = photoRegions.firstOrNull { it.id == regionId } ?: return
@@ -202,9 +219,12 @@ fun CameraScreen() {
             if (it.id == regionId) it.copy(label = LabelState.Recognizing) else it
         }
         val languageAtRequestTime = secondaryLanguage
+        // 使用者自己圈的範圍算複雜任務：會動手圈通常正是因為自動偵測沒框到，
+        // 可能是局部細節或文字，值得派比較強的模型
+        val task = if (region.manual) RecognitionTask.COMPLEX else RecognitionTask.SIMPLE
         scope.launch {
             val recognized = if (recognizer.ensureReady()) {
-                recognizer.recognize(cropped, languageAtRequestTime)
+                recognizer.recognize(cropped, languageAtRequestTime, task)
             } else {
                 null
             }
@@ -418,8 +438,13 @@ fun CameraScreen() {
                                     labels[id] = LabelState.Recognizing
                                     val languageAtRequestTime = secondaryLanguage
                                     scope.launch {
+                                        // 自動偵測框出來的單一物件，屬於簡單任務
                                         val recognized = if (recognizer.ensureReady()) {
-                                            recognizer.recognize(cropped, languageAtRequestTime)
+                                            recognizer.recognize(
+                                                cropped,
+                                                languageAtRequestTime,
+                                                RecognitionTask.SIMPLE,
+                                            )
                                         } else {
                                             null
                                         }
@@ -566,16 +591,23 @@ fun CameraScreen() {
             }
         }
 
-        // 上方控制列：切換顯示模式／翻譯語言／開單字本／切換 VR 模式。
-        // 加 statusBarsPadding() 是因為 targetSdk 36 預設 edge-to-edge，
-        // 沒有這個的話按鈕會被狀態列蓋住一部分，點起來會不準；
-        // 橫向捲動則是避免按鈕在窄螢幕上擠不下。這一列刻意排在 VR 畫面「之後」
-        // 組合，才會疊在 VR 分割畫面上方，這樣把手機從 cardboard 拿出來後
-        // 還是點得到「退出 VR」。
+        // 控制列。拍照模式放在畫面下方（像相機 App 那樣，拇指好按，也不會擋住
+        // 照片上緣的框）；即時／VR 模式維持在上方，因為下方是雙手持握的位置，
+        // 即時模式常常要一邊舉著手機一邊點。
+        // statusBarsPadding / navigationBarsPadding 是因為 targetSdk 36 預設
+        // edge-to-edge，沒有的話按鈕會被系統列蓋住一部分，點起來不準。
+        // 橫向捲動則是避免按鈕在窄螢幕上擠不下。
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .statusBarsPadding()
+                .align(if (viewMode == ViewMode.PHOTO) Alignment.BottomCenter else Alignment.TopCenter)
+                .then(
+                    if (viewMode == ViewMode.PHOTO) {
+                        Modifier.navigationBarsPadding()
+                    } else {
+                        Modifier.statusBarsPadding()
+                    },
+                )
                 .horizontalScroll(rememberScrollState())
                 .padding(16.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -588,6 +620,9 @@ fun CameraScreen() {
             }
             Button(onClick = { showingMarkedWords = true }) {
                 Text("單字本 (${markedWords.size})")
+            }
+            Button(onClick = { editingRecognizer = true }) {
+                Text("辨識：${recognizerSettings.kind.label}")
             }
             if (viewMode == ViewMode.PHOTO) {
                 Button(onClick = { takePhoto() }) {
@@ -617,17 +652,19 @@ fun CameraScreen() {
             }
         }
 
+        // 拍照模式的操作提示放在上方（控制列已經佔住下方了）
         if (viewMode == ViewMode.PHOTO) {
             Text(
                 text = if (photoDetecting) {
                     "偵測中…"
                 } else {
-                    "點框辨識／已辨識的點一下會唸出來；長按可命名標記；直接拖曳可圈出任意範圍辨識"
+                    "雙指縮放／移動；點框辨識，已辨識的點一下會唸出來；長按可命名標記；單指拖曳可圈出任意範圍辨識"
                 },
                 fontSize = 12.sp,
                 color = Color.White,
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding()
                     .padding(16.dp),
             )
         }
@@ -711,6 +748,18 @@ fun CameraScreen() {
                 onRemove = { primary ->
                     markedWordsStore.remove(primary)
                     markedWords = markedWordsStore.getAll()
+                },
+            )
+        }
+
+        if (editingRecognizer) {
+            RecognizerSettingsDialog(
+                initial = recognizerSettings,
+                onDismiss = { editingRecognizer = false },
+                onConfirm = { updated ->
+                    settingsStore.save(updated)
+                    recognizerSettings = updated
+                    editingRecognizer = false
                 },
             )
         }
