@@ -139,12 +139,14 @@ private data class TrackedBox(
  * 雙語支援：辨識時同時跟 Gemini Nano 要原文（繁中）和翻譯名稱，
  * 畫面上可以切換只看原文／只看翻譯／雙語對照，方便學習用途。
  *
- * VR cardboard 模式：畫面分成左右兩半（塞進 cardboard viewer 用），
- * 互動方式改成「準星停留在框裡一段時間」＝選取，而不是觸控——這是刻意的
- * 選擇：手機真的放進 cardboard viewer 裡之後是摸不到螢幕的，這也是 Google
- * 當年 Cardboard SDK 用「凝視＋停留」取代觸控的原因。畫面中央固定的準星，
- * 代表的其實是「手機/頭現在指向哪裡」。如果你實際上不打算把手機放進真的
- * viewer、只是想要分割畫面的視覺效果、還是想用手指觸控選取，這裡可以再調整。
+ * VR cardboard 模式：畫面鎖橫向、分成左右兩半（塞進 cardboard viewer 用）。
+ * 手機放進眼鏡後摸不到螢幕，所以互動靠畫面中央固定的準星（代表「頭現在
+ * 指向哪裡」）：
+ * - 凝視短停留：選取（已命名就唸出來，還沒辨識就送辨識）
+ * - 繼續停留到長停留：標記／取消標記單字（有語音確認）
+ * - 眼鏡側邊的按鈕（按下去會碰觸螢幕）：立刻選取，不用等停留
+ * - 手機拿出來後長按螢幕或按返回鍵：退出 VR
+ * 控制列和對話框在 VR 裡都不顯示——它們會橫跨兩眼，戴著眼鏡看不清楚也按不到。
  */
 @OptIn(ExperimentalGetImage::class)
 @Composable
@@ -415,15 +417,56 @@ fun CameraScreen() {
         }
     }
 
+    // VR 模式下準星目前對著哪個框。凝視停留和眼鏡按鈕（點螢幕）都用它
+    var vrGazedId by remember { mutableStateOf<Int?>(null) }
+    // VR 模式下短暫顯示在兩眼畫面裡的提示（內容＋出現時間，時間讓同一句話也能重新計時）
+    var vrMessage by remember { mutableStateOf<Pair<String, Long>?>(null) }
+    LaunchedEffect(vrMessage) {
+        if (vrMessage != null) {
+            delay(2_000)
+            vrMessage = null
+        }
+    }
+
+    /** VR 的「選取」：已命名就唸出來，還沒辨識就送辨識。凝視短停留和眼鏡按鈕共用。 */
+    fun vrSelect(id: Int) {
+        when (val label = labels[id]) {
+            is LabelState.Named -> speaker.speak(label, displayMode, secondaryLanguage)
+            else -> recognizeLive(id)
+        }
+    }
+
+    /**
+     * VR 的長停留：標記／取消標記這個單字，用語音和畫面提示確認。
+     *
+     * 一般模式的長按是開命名對話框，但那在 VR 裡行不通：對話框整個螢幕置中，
+     * 戴著眼鏡時每隻眼睛只看得到一半，而且要打字、要點按鈕。長按功能裡唯一
+     * 不需要打字的就是「標記」，所以 VR 裡長停留只做這件事；要改名或查字典，
+     * 之後在一般模式從單字本處理。
+     */
+    fun vrToggleMark(id: Int) {
+        val named = labels[id] as? LabelState.Named
+        if (named == null) {
+            vrMessage = "還沒辨識出名稱，無法標記" to System.currentTimeMillis()
+            speaker.announce("還沒辨識出名稱")
+            return
+        }
+        val wasMarked = markedWords.any { it.primary == named.primary }
+        toggleMark(named.primary, named.secondary)
+        val text = if (wasMarked) "已移出單字本" else "已加入單字本"
+        vrMessage = (if (wasMarked) "☆ " else "★ ") + "$text：${named.primary}" to System.currentTimeMillis()
+        speaker.announce(text)
+    }
+
     // VR 模式的「凝視＋停留」偵測：準星固定在每一半畫面的正中央，分兩段：
-    // 停留到 DWELL_SHORT_MS 唸出發音（等同一般模式短按），如果視線沒移開、
-    // 繼續停留到 DWELL_LONG_MS 則開命名/標記對話框（等同一般模式長按）。
-    // 對話框本身還是要用手摸（輸入文字、按確定），所以這個用法預期是：
-    // 用凝視選好要哪個物件，再把手機從 viewer 拿出來完成剩下的操作。
+    // 停留到 DWELL_SHORT_MS 選取（唸出發音或送辨識，等同一般模式短按）；
+    // 視線沒移開、繼續停留到 DWELL_LONG_MS 則標記／取消標記單字。
+    // 眼鏡側邊的按鈕（按下去會點到螢幕）則是「立刻選取」，不用等停留。
     LaunchedEffect(viewMode) {
         if (viewMode != ViewMode.VR_CARDBOARD) {
             gazeProgress = 0f
             gazePastShort = false
+            vrGazedId = null
             return@LaunchedEffect
         }
         var gazedId: Int? = null
@@ -449,6 +492,7 @@ fun CameraScreen() {
                 .minByOrNull { (_, r) -> r.width * r.height }
                 ?.first
 
+            vrGazedId = hitId
             if (hitId != gazedId) {
                 gazedId = hitId
                 gazeStartMs = System.currentTimeMillis()
@@ -465,11 +509,7 @@ fun CameraScreen() {
                         firedShort = true
                         gazePastShort = true
                         gazeProgress = 0f
-                        when (val label = labels[hitId]) {
-                            is LabelState.Named ->
-                                speaker.speak(label, displayMode, secondaryLanguage)
-                            else -> recognizeLive(hitId)
-                        }
+                        vrSelect(hitId)
                     }
                 } else if (!firedLong) {
                     val longSpan = DWELL_LONG_MS - DWELL_SHORT_MS
@@ -477,7 +517,7 @@ fun CameraScreen() {
                     if (elapsed >= DWELL_LONG_MS) {
                         firedLong = true
                         gazeProgress = 0f
-                        renamingId = hitId
+                        vrToggleMark(hitId)
                     }
                 }
             } else {
@@ -653,7 +693,16 @@ fun CameraScreen() {
             Row(
                 modifier = Modifier
                     .fillMaxSize()
-                    .onSizeChanged { vrContainerSize = it },
+                    .onSizeChanged { vrContainerSize = it }
+                    .pointerInput(Unit) {
+                        detectTapGestures(
+                            // 很多 cardboard 眼鏡側邊有按鈕，按下去會碰觸螢幕：
+                            // 當作「立刻選取準星對著的東西」，不用等停留
+                            onTap = { vrGazedId?.let { vrSelect(it) } },
+                            // 手機拿出眼鏡後長按螢幕退出 VR（返回鍵也可以）
+                            onLongPress = { viewMode = ViewMode.NORMAL },
+                        )
+                    },
             ) {
                 repeat(2) {
                     Box(modifier = Modifier.weight(1f).fillMaxSize()) {
@@ -688,6 +737,19 @@ fun CameraScreen() {
                                     center = center,
                                 )
                             }
+
+                            // 提示文字畫在「每隻眼睛各自的畫面裡」，戴著眼鏡才讀得到；
+                            // 不能用一般的 Compose 元件橫跨整個螢幕
+                            vrMessage?.let { (text, _) ->
+                                drawVrText(textMeasurer, text, size.height * 0.15f, size.width, 18.sp)
+                            }
+                            drawVrText(
+                                textMeasurer,
+                                "長按螢幕或按返回鍵退出 VR",
+                                size.height * 0.9f,
+                                size.width,
+                                12.sp,
+                            )
                         }
                     }
                 }
@@ -700,7 +762,9 @@ fun CameraScreen() {
         // statusBarsPadding / navigationBarsPadding 是因為 targetSdk 36 預設
         // edge-to-edge，沒有的話按鈕會被系統列蓋住一部分，點起來不準。
         // 橫向捲動則是避免按鈕在窄螢幕上擠不下。
-        Row(
+        // VR 模式不顯示控制列：它會橫跨左右兩眼，戴著眼鏡什麼都看不清楚，
+        // 而且在眼鏡裡也按不到。退出 VR 用長按螢幕或返回鍵。
+        if (viewMode != ViewMode.VR_CARDBOARD) Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .align(if (viewMode == ViewMode.PHOTO) Alignment.BottomCenter else Alignment.TopCenter)
@@ -870,6 +934,27 @@ fun CameraScreen() {
             )
         }
     }
+}
+
+/** 在單眼畫面裡水平置中畫一行帶半透明底的文字（VR 提示用）。 */
+private fun DrawScope.drawVrText(
+    textMeasurer: TextMeasurer,
+    text: String,
+    centerY: Float,
+    paneWidth: Float,
+    fontSize: androidx.compose.ui.unit.TextUnit,
+) {
+    val layout = textMeasurer.measure(text, TextStyle(fontSize = fontSize))
+    val w = layout.size.width.toFloat()
+    val h = layout.size.height.toFloat()
+    val x = ((paneWidth - w) / 2f).coerceAtLeast(0f)
+    val y = centerY - h / 2f
+    drawRect(
+        color = Color.Black.copy(alpha = 0.6f),
+        topLeft = Offset(x - 8f, y - 4f),
+        size = Size(w + 16f, h + 8f),
+    )
+    drawText(textLayoutResult = layout, topLeft = Offset(x, y), color = Color.White)
 }
 
 /** 畫所有框＋標籤文字；一般模式和 VR 模式的兩個分割畫面都呼叫這個共用邏輯。 */

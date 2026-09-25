@@ -70,6 +70,17 @@ class Speaker(context: Context) {
         }
     }
 
+    /**
+     * 用繁體中文唸一句提示（例如「已加入單字本」）。VR 模式下畫面上的小字
+     * 透過鏡片不好讀，操作結果靠聲音確認比較可靠。
+     */
+    fun announce(text: String) {
+        val engine = tts ?: return
+        if (!ready) return
+        engine.language = Locale.TAIWAN
+        engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, null)
+    }
+
     private fun resolveLocale(languageHint: String): Locale =
         LANGUAGE_LOCALES[languageHint.trim().lowercase()] ?: Locale.getDefault()
 
