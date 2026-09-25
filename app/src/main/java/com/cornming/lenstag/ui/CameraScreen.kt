@@ -79,6 +79,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import com.cornming.lenstag.camera.AnalysisSettings
 import com.cornming.lenstag.camera.DetectionResult
 import com.cornming.lenstag.camera.FrameSink
@@ -339,6 +342,22 @@ fun CameraScreen() {
             ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         } else {
             ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        }
+    }
+
+    // VR 模式隱藏系統的狀態列和導覽列（全螢幕沉浸模式）。實機截圖發現時間、
+    // 通知圖示、電量和底部的手勢橫條都還疊在 VR 畫面上，跟之前隱藏的控制列是
+    // 同一類問題：橫跨兩眼、戴著眼鏡看起來很干擾，有通知時還會跳出來蓋住畫面。
+    // 從邊緣滑動可以暫時叫出來（拿出手機時用得到）。
+    LaunchedEffect(viewMode) {
+        val window = activity?.window ?: return@LaunchedEffect
+        val controller = WindowCompat.getInsetsController(window, window.decorView)
+        if (viewMode == ViewMode.VR_CARDBOARD) {
+            controller.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+        } else {
+            controller.show(WindowInsetsCompat.Type.systemBars())
         }
     }
 
