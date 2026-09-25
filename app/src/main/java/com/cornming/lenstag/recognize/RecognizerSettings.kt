@@ -2,10 +2,18 @@ package com.cornming.lenstag.recognize
 
 import android.content.Context
 
-/** 要用哪一種辨識方式。 */
-enum class RecognizerKind(val label: String) {
-    ON_DEVICE("手機內建 AI"),
-    AZURE("Azure AI Foundry"),
+/**
+ * 要用哪一種辨識方式。
+ *
+ * autoRecognizeLive：即時模式下，物件一穩定下來要不要「自動」送去辨識。
+ * - 手機內建 AI 是免費的，自動辨識沒有成本，維持原本的體驗
+ * - Azure 每次呼叫都要錢，而即時模式每出現一個新的追蹤 ID 就會觸發一次——
+ *   拿著手機走一圈，追蹤 ID 不斷產生，可能幾十次呼叫就出去了。所以 Azure
+ *   模式下改成「點框才辨識」，每一次付費呼叫都是使用者有意識的動作
+ */
+enum class RecognizerKind(val label: String, val autoRecognizeLive: Boolean) {
+    ON_DEVICE("手機內建 AI", autoRecognizeLive = true),
+    AZURE("Azure AI Foundry", autoRecognizeLive = false),
 }
 
 /**

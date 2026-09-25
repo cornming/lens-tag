@@ -16,6 +16,9 @@ private const val TAG = "AzureFoundryRecognizer"
 /** 送去 Azure 前先把圖片縮到這個邊長以內，省流量也省 token，辨識品質影響很小。 */
 private const val MAX_UPLOAD_EDGE = 768
 
+/** 每分鐘最多幾次 Azure 呼叫。安全網，正常手動操作碰不到這個上限。 */
+private const val MAX_CALLS_PER_MINUTE = 20
+
 /**
  * 打 Azure AI Foundry 的 chat completions 端點做辨識。
  *
@@ -29,7 +32,10 @@ private const val MAX_UPLOAD_EDGE = 768
  * 完整填寫（含 api-version），這樣 Azure OpenAI 形式和 Foundry Models 形式
  * 的端點都能用，不用我猜他的資源是哪一種。
  */
-class AzureFoundryRecognizer(private val settings: AzureSettings) : Recognizer {
+class AzureFoundryRecognizer(
+    private val settings: AzureSettings,
+    private val rateLimiter: RateLimiter = RateLimiter(MAX_CALLS_PER_MINUTE, 60_000L),
+) : Recognizer {
 
     override val displayName = "Azure AI Foundry"
 
@@ -41,6 +47,10 @@ class AzureFoundryRecognizer(private val settings: AzureSettings) : Recognizer {
         task: RecognitionTask,
     ): RecognizedLabel? = withContext(Dispatchers.IO) {
         if (!settings.isUsable()) return@withContext null
+        if (!rateLimiter.tryAcquire()) {
+            Log.w(TAG, "已達每分鐘 $MAX_CALLS_PER_MINUTE 次的呼叫上限，這次先不送")
+            return@withContext null
+        }
 
         val model = settings.modelFor(task)
         return@withContext try {

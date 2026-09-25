@@ -44,6 +44,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -82,6 +83,7 @@ import com.cornming.lenstag.geometry.PreviewTransform
 import com.cornming.lenstag.geometry.previewTransform
 import com.cornming.lenstag.recognize.AzureFoundryRecognizer
 import com.cornming.lenstag.recognize.OnDeviceRecognizer
+import com.cornming.lenstag.recognize.RateLimiter
 import com.cornming.lenstag.recognize.RecognitionTask
 import com.cornming.lenstag.recognize.Recognizer
 import com.cornming.lenstag.recognize.RecognizerKind
@@ -143,12 +145,19 @@ fun CameraScreen() {
     val settingsStore = remember { RecognizerSettingsStore(context) }
     var recognizerSettings by remember { mutableStateOf(settingsStore.load()) }
     var editingRecognizer by remember { mutableStateOf(false) }
+    // 限流器放在畫面層保存，不跟著 recognizer 重建——不然每改一次設定計數就歸零，
+    // 等於改一下設定就能繞過上限
+    val azureRateLimiter = remember { RateLimiter(maxCalls = 20, windowMs = 60_000L) }
     val recognizer: Recognizer = remember(recognizerSettings) {
         when (recognizerSettings.kind) {
             RecognizerKind.ON_DEVICE -> OnDeviceRecognizer()
-            RecognizerKind.AZURE -> AzureFoundryRecognizer(recognizerSettings.azure)
+            RecognizerKind.AZURE -> AzureFoundryRecognizer(recognizerSettings.azure, azureRateLimiter)
         }
     }
+    // 即時模式的分析器是在相機初始化時建立的（AndroidView 的 factory 只跑一次），
+    // 如果直接用上面的 recognizer，它會永遠抓著「初始化當下」那一個——切換辨識
+    // 方式之後即時模式還在用舊的。透過 rememberUpdatedState 讀，永遠拿到最新的。
+    val currentRecognizer by rememberUpdatedState(recognizer)
     val textMeasurer = rememberTextMeasurer()
     val speaker = remember { Speaker(context) }
     DisposableEffect(Unit) {
@@ -223,8 +232,9 @@ fun CameraScreen() {
         // 可能是局部細節或文字，值得派比較強的模型
         val task = if (region.manual) RecognitionTask.COMPLEX else RecognitionTask.SIMPLE
         scope.launch {
-            val recognized = if (recognizer.ensureReady()) {
-                recognizer.recognize(cropped, languageAtRequestTime, task)
+            val active = currentRecognizer
+            val recognized = if (active.ensureReady()) {
+                active.recognize(cropped, languageAtRequestTime, task)
             } else {
                 null
             }
@@ -304,6 +314,33 @@ fun CameraScreen() {
         }
     }
 
+    // 追蹤 ID -> 物件「穩定下來那一刻」裁切出來的圖。Azure 模式下不自動辨識，
+    // 改成點框才辨識——但點擊當下手上沒有影像可以裁，所以先把穩定時那張清晰的
+    // 裁切圖存起來，點的時候直接拿來用。框消失時一起清掉，不會無限累積。
+    val liveCrops = remember { mutableMapOf<Int, Bitmap>() }
+
+    /** 把即時模式某個追蹤 ID 的裁切圖送去辨識。自動辨識、點擊、VR 凝視都走這裡。 */
+    fun recognizeLive(id: Int) {
+        if (labels[id] is LabelState.Named || labels[id] == LabelState.Recognizing) return
+        val cropped = liveCrops[id] ?: return // 物件還沒穩定過，沒有清晰的圖可以送
+
+        labels[id] = LabelState.Recognizing
+        val languageAtRequestTime = secondaryLanguage
+        scope.launch {
+            val active = currentRecognizer
+            // 自動偵測框出來的單一物件，屬於簡單任務
+            val recognized = if (active.ensureReady()) {
+                active.recognize(cropped, languageAtRequestTime, RecognitionTask.SIMPLE)
+            } else {
+                null
+            }
+            // 辨識失敗或裝置不支援就退回 Unknown，框還在、使用者仍然可以點擊手動命名
+            labels[id] = recognized
+                ?.let { LabelState.Named(it.primary, it.secondary) }
+                ?: LabelState.Unknown
+        }
+    }
+
     // VR 模式的「凝視＋停留」偵測：準星固定在每一半畫面的正中央，分兩段：
     // 停留到 DWELL_SHORT_MS 唸出發音（等同一般模式短按），如果視線沒移開、
     // 繼續停留到 DWELL_LONG_MS 則開命名/標記對話框（等同一般模式長按）。
@@ -354,8 +391,10 @@ fun CameraScreen() {
                         firedShort = true
                         gazePastShort = true
                         gazeProgress = 0f
-                        (labels[hitId] as? LabelState.Named)?.let { named ->
-                            speaker.speak(named, displayMode, secondaryLanguage)
+                        when (val label = labels[hitId]) {
+                            is LabelState.Named ->
+                                speaker.speak(label, displayMode, secondaryLanguage)
+                            else -> recognizeLive(hitId)
                         }
                     }
                 } else if (!firedLong) {
@@ -388,6 +427,7 @@ fun CameraScreen() {
         expired.forEach { id ->
             trackedBoxes.remove(id)
             labels.remove(id)
+            liveCrops.remove(id)
         }
     }
 
@@ -433,27 +473,12 @@ fun CameraScreen() {
                         ObjectAnalyzer(
                             onDetected = ::onDetected,
                             onStableObject = { id, cropped ->
-                                // 只有「穩定不動」的物件會走到這裡，所以不必再自己節流
-                                if (labels[id] !is LabelState.Named) {
-                                    labels[id] = LabelState.Recognizing
-                                    val languageAtRequestTime = secondaryLanguage
-                                    scope.launch {
-                                        // 自動偵測框出來的單一物件，屬於簡單任務
-                                        val recognized = if (recognizer.ensureReady()) {
-                                            recognizer.recognize(
-                                                cropped,
-                                                languageAtRequestTime,
-                                                RecognitionTask.SIMPLE,
-                                            )
-                                        } else {
-                                            null
-                                        }
-                                        // 辨識失敗或裝置不支援就退回 Unknown，
-                                        // 框還在、使用者仍然可以點擊手動命名
-                                        labels[id] = recognized
-                                            ?.let { LabelState.Named(it.primary, it.secondary) }
-                                            ?: LabelState.Unknown
-                                    }
+                                // 只有「穩定不動」的物件會走到這裡，所以不必再自己節流。
+                                // 一律先存下裁切圖；要不要自動送辨識看辨識方式——
+                                // 付費的 Azure 不自動送，等使用者點框才送。
+                                liveCrops[id] = cropped
+                                if (recognizerSettings.kind.autoRecognizeLive) {
+                                    recognizeLive(id)
                                 }
                             },
                             frameSink = frameSink,
@@ -519,8 +544,12 @@ fun CameraScreen() {
                                     .minByOrNull { (_, r) -> r.width * r.height }
                                     ?.first
                                 hitId?.let { id ->
-                                    (labels[id] as? LabelState.Named)?.let { named ->
-                                        speaker.speak(named, displayMode, secondaryLanguage)
+                                    // 已命名就唸出來；還沒辨識就送辨識（Azure 模式
+                                    // 不自動辨識，這裡就是觸發的地方）
+                                    when (val label = labels[id]) {
+                                        is LabelState.Named ->
+                                            speaker.speak(label, displayMode, secondaryLanguage)
+                                        else -> recognizeLive(id)
                                     }
                                 }
                             },
