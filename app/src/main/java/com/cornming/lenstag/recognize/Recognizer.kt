@@ -21,6 +21,33 @@ data class RecognizedLabel(
 enum class RecognitionTask { SIMPLE, COMPLEX }
 
 /**
+ * 辨識失敗的原因，附一個畫面上顯示用的短標籤。
+ *
+ * 之前不管哪種失敗都回 null，畫面上全部是同一個灰色問號——裝置不支援、
+ * Azure 金鑰填錯、模型名稱打錯、沒網路，完全分不出來。尤其 Azure 要手動填
+ * 四個欄位，填錯的機率不低，沒有這些區分根本無從除錯。
+ */
+enum class FailureReason(val shortLabel: String) {
+    NOT_SUPPORTED("裝置不支援"),
+    MODEL_DOWNLOADING("模型下載中"),
+    NOT_CONFIGURED("未設定"),
+    RATE_LIMITED("已達上限"),
+    AUTH("金鑰錯誤"),
+    NOT_FOUND("端點或模型錯誤"),
+    BAD_REQUEST("請求被拒"),
+    NETWORK("網路錯誤"),
+    SERVER("伺服器錯誤"),
+    NO_ANSWER("無法辨識"),
+    UNKNOWN("未知錯誤"),
+}
+
+/** 一次辨識的結果：成功就帶標籤，失敗就帶原因（detail 是給人看的原始錯誤訊息）。 */
+sealed interface RecognitionResult {
+    data class Success(val label: RecognizedLabel) : RecognitionResult
+    data class Failure(val reason: FailureReason, val detail: String? = null) : RecognitionResult
+}
+
+/**
  * 辨識器的共同介面。目前有兩種實作：
  * - OnDeviceRecognizer：手機內建的 Gemini Nano，離線、免費、但受限於機型
  * - AzureFoundryRecognizer：打 Azure AI Foundry 端點，準確度高、不挑機型，
@@ -28,10 +55,10 @@ enum class RecognitionTask { SIMPLE, COMPLEX }
  */
 interface Recognizer {
     /**
-     * 確認這個辨識器現在可不可以用（例如裝置支不支援、設定填了沒）。
-     * 必要時會做初始化工作（例如觸發模型下載）。
+     * 確認這個辨識器現在可不可以用。可以用回 null；不能用回原因。
+     * 必要時會啟動初始化工作（例如在背景觸發模型下載），但不會卡住等它完成。
      */
-    suspend fun ensureReady(): Boolean
+    suspend fun ensureReady(): FailureReason?
 
     /**
      * 辨識一張裁切好的物件圖片。
@@ -42,10 +69,20 @@ interface Recognizer {
         objectBitmap: Bitmap,
         secondaryLanguage: String?,
         task: RecognitionTask,
-    ): RecognizedLabel?
+    ): RecognitionResult
 
-    /** 顯示在設定畫面上的名稱，以及目前不能用時要告訴使用者的原因。 */
+    /** 顯示在設定畫面上的名稱。 */
     val displayName: String
+}
+
+/** 先確認可用、再辨識。呼叫端統一走這個，不用每處都自己寫一次檢查。 */
+suspend fun Recognizer.recognizeIfReady(
+    objectBitmap: Bitmap,
+    secondaryLanguage: String?,
+    task: RecognitionTask,
+): RecognitionResult {
+    ensureReady()?.let { return RecognitionResult.Failure(it) }
+    return recognize(objectBitmap, secondaryLanguage, task)
 }
 
 /**

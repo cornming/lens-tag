@@ -89,6 +89,7 @@ import com.cornming.lenstag.recognize.Recognizer
 import com.cornming.lenstag.recognize.RecognizerKind
 import com.cornming.lenstag.recognize.RecognizerSettings
 import com.cornming.lenstag.recognize.RecognizerSettingsStore
+import com.cornming.lenstag.recognize.recognizeIfReady
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.max
@@ -232,22 +233,9 @@ fun CameraScreen() {
         // 可能是局部細節或文字，值得派比較強的模型
         val task = if (region.manual) RecognitionTask.COMPLEX else RecognitionTask.SIMPLE
         scope.launch {
-            val active = currentRecognizer
-            val recognized = if (active.ensureReady()) {
-                active.recognize(cropped, languageAtRequestTime, task)
-            } else {
-                null
-            }
+            val result = currentRecognizer.recognizeIfReady(cropped, languageAtRequestTime, task)
             photoRegions = photoRegions.map {
-                if (it.id == regionId) {
-                    it.copy(
-                        label = recognized
-                            ?.let { r -> LabelState.Named(r.primary, r.secondary) }
-                            ?: LabelState.Unknown,
-                    )
-                } else {
-                    it
-                }
+                if (it.id == regionId) it.copy(label = result.toLabelState()) else it
             }
         }
     }
@@ -327,17 +315,14 @@ fun CameraScreen() {
         labels[id] = LabelState.Recognizing
         val languageAtRequestTime = secondaryLanguage
         scope.launch {
-            val active = currentRecognizer
-            // 自動偵測框出來的單一物件，屬於簡單任務
-            val recognized = if (active.ensureReady()) {
-                active.recognize(cropped, languageAtRequestTime, RecognitionTask.SIMPLE)
-            } else {
-                null
-            }
-            // 辨識失敗或裝置不支援就退回 Unknown，框還在、使用者仍然可以點擊手動命名
-            labels[id] = recognized
-                ?.let { LabelState.Named(it.primary, it.secondary) }
-                ?: LabelState.Unknown
+            // 自動偵測框出來的單一物件，屬於簡單任務。失敗的話框會顯示具體原因，
+            // 點一下可以重試，長按仍然可以手動命名
+            val result = currentRecognizer.recognizeIfReady(
+                cropped,
+                languageAtRequestTime,
+                RecognitionTask.SIMPLE,
+            )
+            labels[id] = result.toLabelState()
         }
     }
 
@@ -701,6 +686,7 @@ fun CameraScreen() {
         renamingId?.let { id ->
             val current = labels[id] as? LabelState.Named
             RenameDialog(
+                failure = labels[id] as? LabelState.Failed,
                 initialPrimary = current?.primary.orEmpty(),
                 initialSecondary = current?.secondary.orEmpty(),
                 markedPrimaries = remember(markedWords) { markedWords.map { it.primary }.toSet() },
@@ -728,6 +714,7 @@ fun CameraScreen() {
             val region = photoRegions.firstOrNull { it.id == id }
             val current = region?.label as? LabelState.Named
             RenameDialog(
+                failure = region?.label as? LabelState.Failed,
                 initialPrimary = current?.primary.orEmpty(),
                 initialSecondary = current?.secondary.orEmpty(),
                 markedPrimaries = remember(markedWords) { markedWords.map { it.primary }.toSet() },
@@ -821,6 +808,7 @@ private fun DrawScope.drawDetections(
         val color = when (state) {
             is LabelState.Named -> Color(0xFF4CAF50)
             LabelState.Recognizing -> Color(0xFFFFC107)
+            is LabelState.Failed -> Color(0xFFF44336)
             LabelState.Unknown -> Color(0xFF9E9E9E)
         }
 
@@ -875,6 +863,7 @@ private fun RenameDialog(
     onConfirm: (primary: String, secondary: String) -> Unit,
     onToggleMark: (primary: String, secondary: String) -> Unit,
     onOpenDictionary: (word: String) -> Unit,
+    failure: LabelState.Failed? = null,
 ) {
     var primary by remember { mutableStateOf(initialPrimary) }
     var secondary by remember { mutableStateOf(initialSecondary) }
@@ -885,6 +874,15 @@ private fun RenameDialog(
         title = { Text("這是什麼？") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                // 辨識失敗的話，框上只放得下短標籤，完整原因在這裡顯示
+                failure?.let { f ->
+                    Text(
+                        text = "辨識失敗：${f.reason.shortLabel}" +
+                            (f.detail?.let { "\n$it" } ?: ""),
+                        color = Color(0xFFF44336),
+                        fontSize = 12.sp,
+                    )
+                }
                 OutlinedTextField(
                     value = primary,
                     onValueChange = { primary = it },

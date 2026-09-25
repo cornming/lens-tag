@@ -169,6 +169,7 @@ fun PhotoModeScreen(
                 val color = when (region.label) {
                     is LabelState.Named -> Color(0xFF4CAF50)
                     LabelState.Recognizing -> Color(0xFFFFC107)
+                    is LabelState.Failed -> Color(0xFFF44336)
                     // 手動圈的框用藍色，跟自動偵測的灰框區分開來
                     LabelState.Unknown -> if (region.manual) Color(0xFF2196F3) else Color(0xFF9E9E9E)
                 }

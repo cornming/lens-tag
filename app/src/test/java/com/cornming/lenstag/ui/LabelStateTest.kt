@@ -1,5 +1,8 @@
 package com.cornming.lenstag.ui
 
+import com.cornming.lenstag.recognize.FailureReason
+import com.cornming.lenstag.recognize.RecognitionResult
+import com.cornming.lenstag.recognize.RecognizedLabel
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -33,6 +36,30 @@ class LabelStateTest {
         assertEquals("門", state.displayText(DisplayMode.PRIMARY))
         assertEquals("door", state.displayText(DisplayMode.SECONDARY))
         assertEquals("門 door", state.displayText(DisplayMode.BOTH))
+    }
+
+    @Test
+    fun `a failed label shows its specific reason, not a bare question mark`() {
+        // 這是步驟 2 的重點：失敗原因要看得出來，不能跟「還沒辨識」長得一樣
+        val failed = LabelState.Failed(FailureReason.AUTH, "HTTP 401")
+        DisplayMode.entries.forEach { mode ->
+            assertEquals("⚠ 金鑰錯誤", failed.displayText(mode))
+        }
+    }
+
+    @Test
+    fun `a successful result becomes a named label`() {
+        val result = RecognitionResult.Success(RecognizedLabel("門", "door"))
+        assertEquals(LabelState.Named("門", "door"), result.toLabelState())
+    }
+
+    @Test
+    fun `a failed result keeps both its reason and its detail`() {
+        val result = RecognitionResult.Failure(FailureReason.NOT_FOUND, "HTTP 404：deployment not found")
+        assertEquals(
+            LabelState.Failed(FailureReason.NOT_FOUND, "HTTP 404：deployment not found"),
+            result.toLabelState(),
+        )
     }
 
     @Test

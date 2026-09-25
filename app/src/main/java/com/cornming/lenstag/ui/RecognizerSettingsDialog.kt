@@ -7,6 +7,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -15,14 +17,20 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.cornming.lenstag.recognize.AzureFoundryRecognizer
 import com.cornming.lenstag.recognize.AzureSettings
+import com.cornming.lenstag.recognize.ConnectionTestResult
+import com.cornming.lenstag.recognize.RecognitionResult
 import com.cornming.lenstag.recognize.RecognizerKind
 import com.cornming.lenstag.recognize.RecognizerSettings
+import kotlinx.coroutines.launch
 
 /**
  * 辨識方式設定：選手機內建 AI 還是 Azure AI Foundry，選 Azure 的話填連線資訊。
@@ -38,6 +46,17 @@ fun RecognizerSettingsDialog(
     var apiKey by remember { mutableStateOf(initial.azure.apiKey) }
     var simpleModel by remember { mutableStateOf(initial.azure.simpleModel) }
     var complexModel by remember { mutableStateOf(initial.azure.complexModel) }
+
+    val scope = rememberCoroutineScope()
+    var testing by remember { mutableStateOf(false) }
+    var testResults by remember { mutableStateOf<List<ConnectionTestResult>>(emptyList()) }
+
+    fun currentAzure() = AzureSettings(
+        endpoint = endpoint.trim(),
+        apiKey = apiKey.trim(),
+        simpleModel = simpleModel.trim(),
+        complexModel = complexModel.trim(),
+    )
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -116,25 +135,52 @@ fun RecognizerSettingsDialog(
                                 "兩個模型欄位不會有分流效果，要用 Foundry Models 形式的端點才有。",
                             fontSize = 11.sp,
                         )
+
+                        // 用「現在表單上填的值」測試，不是已儲存的值——
+                        // 不然得先存一份錯誤的設定才能測
+                        Button(
+                            onClick = {
+                                testing = true
+                                testResults = emptyList()
+                                scope.launch {
+                                    testResults = AzureFoundryRecognizer(currentAzure()).testConnection()
+                                    testing = false
+                                }
+                            },
+                            enabled = !testing,
+                        ) {
+                            Text(if (testing) "測試中…" else "測試連線")
+                        }
+                        if (testing) {
+                            CircularProgressIndicator()
+                        }
+                        testResults.forEach { result -> ConnectionTestRow(result) }
                     }
                 }
             }
         },
         confirmButton = {
             TextButton(onClick = {
-                onConfirm(
-                    RecognizerSettings(
-                        kind = kind,
-                        azure = AzureSettings(
-                            endpoint = endpoint.trim(),
-                            apiKey = apiKey.trim(),
-                            simpleModel = simpleModel.trim(),
-                            complexModel = complexModel.trim(),
-                        ),
-                    ),
-                )
+                onConfirm(RecognizerSettings(kind = kind, azure = currentAzure()))
             }) { Text("確定") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
+}
+
+/** 一個模型的測試結果：成功顯示綠色勾勾，失敗顯示原因與 Azure 回的完整錯誤訊息。 */
+@Composable
+private fun ConnectionTestRow(result: ConnectionTestResult) {
+    when (val r = result.result) {
+        is RecognitionResult.Success -> Text(
+            text = "✓ ${result.model}：連線成功，模型看得懂圖片（回答：${r.label.primary}）",
+            color = Color(0xFF4CAF50),
+            fontSize = 12.sp,
+        )
+        is RecognitionResult.Failure -> Text(
+            text = "✗ ${result.model}：${r.reason.shortLabel}" + (r.detail?.let { "\n$it" } ?: ""),
+            color = Color(0xFFF44336),
+            fontSize = 12.sp,
+        )
+    }
 }

@@ -108,4 +108,64 @@ class AzureRequestTest {
         assertNull(extractContent("""{"choices":[]}"""))
         assertNull(extractContent("""{"error":{"message":"bad request"}}"""))
     }
+
+    @Test
+    fun `request body never sends parameters that reasoning models reject`() {
+        // 回歸防護：GPT-5 系列等推理模型在 chat completions 不支援 max_tokens
+        // 和 temperature，帶了會直接回 400。之後誰想「順手」加回去，這裡會擋住。
+        val body = buildRequestBody("gpt-5", "prompt", "data:image/jpeg;base64,AAAA")
+        assertTrue(!body.contains("max_tokens"))
+        assertTrue(!body.contains("temperature"))
+    }
+
+    @Test
+    fun `pulls the human-readable message out of an Azure error body`() {
+        val body = """{"error":{"code":"DeploymentNotFound","message":"The API deployment for this resource does not exist."}}"""
+        assertEquals("The API deployment for this resource does not exist.", extractErrorMessage(body))
+    }
+
+    @Test
+    fun `error message extraction tolerates garbage and empty bodies`() {
+        assertNull(extractErrorMessage(null))
+        assertNull(extractErrorMessage(""))
+        assertNull(extractErrorMessage("<html>502 Bad Gateway</html>"))
+        assertNull(extractErrorMessage("""{"unexpected":"shape"}"""))
+    }
+}
+
+class HttpStatusMappingTest {
+
+    @Test
+    fun `auth failures point at the key`() {
+        assertEquals(FailureReason.AUTH, reasonForHttpStatus(401))
+        assertEquals(FailureReason.AUTH, reasonForHttpStatus(403))
+    }
+
+    @Test
+    fun `404 points at the endpoint or deployment name`() {
+        assertEquals(FailureReason.NOT_FOUND, reasonForHttpStatus(404))
+    }
+
+    @Test
+    fun `429 is Azure-side quota, reported as rate limited`() {
+        assertEquals(FailureReason.RATE_LIMITED, reasonForHttpStatus(429))
+    }
+
+    @Test
+    fun `malformed requests are reported as rejected`() {
+        assertEquals(FailureReason.BAD_REQUEST, reasonForHttpStatus(400))
+        assertEquals(FailureReason.BAD_REQUEST, reasonForHttpStatus(422))
+    }
+
+    @Test
+    fun `any 5xx is a server problem, not the user's configuration`() {
+        assertEquals(FailureReason.SERVER, reasonForHttpStatus(500))
+        assertEquals(FailureReason.SERVER, reasonForHttpStatus(503))
+        assertEquals(FailureReason.SERVER, reasonForHttpStatus(599))
+    }
+
+    @Test
+    fun `unrecognised codes fall back to unknown rather than guessing`() {
+        assertEquals(FailureReason.UNKNOWN, reasonForHttpStatus(418))
+    }
 }

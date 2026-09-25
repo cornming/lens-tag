@@ -8,6 +8,10 @@ import com.google.mlkit.genai.prompt.Generation
 import com.google.mlkit.genai.prompt.ImagePart
 import com.google.mlkit.genai.prompt.TextPart
 import com.google.mlkit.genai.prompt.generateContentRequest
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 private const val TAG = "OnDeviceRecognizer"
 
@@ -30,22 +34,38 @@ class OnDeviceRecognizer : Recognizer {
 
     private val generativeModel = Generation.getClient()
 
-    override suspend fun ensureReady(): Boolean {
+    // 模型下載在背景跑，不卡住辨識流程。之前的寫法是在 ensureReady 裡直接等整個
+    // 下載完成（可能幾百 MB），這段期間畫面只有黃色「…」，看起來像卡住了。
+    private val downloadScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    @Volatile
+    private var downloadInFlight = false
+
+    override suspend fun ensureReady(): FailureReason? {
         return when (generativeModel.checkStatus()) {
-            FeatureStatus.AVAILABLE -> true
+            FeatureStatus.AVAILABLE -> null
 
             FeatureStatus.UNAVAILABLE -> {
                 Log.w(TAG, "這台裝置不支援 Gemini Nano，或設定尚未同步")
-                false
+                FailureReason.NOT_SUPPORTED
             }
 
-            FeatureStatus.DOWNLOADING -> {
-                Log.d(TAG, "Gemini Nano 下載中，這次先略過辨識")
-                false
-            }
+            FeatureStatus.DOWNLOADING -> FailureReason.MODEL_DOWNLOADING
 
             FeatureStatus.DOWNLOADABLE -> {
-                var success = false
+                startDownloadInBackground()
+                FailureReason.MODEL_DOWNLOADING
+            }
+
+            else -> FailureReason.UNKNOWN
+        }
+    }
+
+    private fun startDownloadInBackground() {
+        if (downloadInFlight) return
+        downloadInFlight = true
+        downloadScope.launch {
+            try {
                 generativeModel.download().collect { status ->
                     when (status) {
                         is DownloadStatus.DownloadStarted ->
@@ -54,19 +74,17 @@ class OnDeviceRecognizer : Recognizer {
                         is DownloadStatus.DownloadProgress ->
                             Log.d(TAG, "已下載 ${status.totalBytesDownloaded} bytes")
 
-                        DownloadStatus.DownloadCompleted -> {
+                        DownloadStatus.DownloadCompleted ->
                             Log.d(TAG, "Gemini Nano 下載完成")
-                            success = true
-                        }
 
                         is DownloadStatus.DownloadFailed ->
                             Log.e(TAG, "下載失敗：${status.e.message}")
                     }
                 }
-                success
+            } finally {
+                // 不管成功或失敗都放開，失敗的話下一次點擊還能再觸發一次下載
+                downloadInFlight = false
             }
-
-            else -> false
         }
     }
 
@@ -74,7 +92,7 @@ class OnDeviceRecognizer : Recognizer {
         objectBitmap: Bitmap,
         secondaryLanguage: String?,
         task: RecognitionTask,
-    ): RecognizedLabel? {
+    ): RecognitionResult {
         return try {
             val response = generativeModel.generateContent(
                 generateContentRequest(
@@ -86,9 +104,11 @@ class OnDeviceRecognizer : Recognizer {
                 },
             )
             parseLabelResponse(response.candidates.firstOrNull()?.text)
+                ?.let { RecognitionResult.Success(it) }
+                ?: RecognitionResult.Failure(FailureReason.NO_ANSWER)
         } catch (e: Exception) {
             Log.e(TAG, "辨識失敗", e)
-            null
+            RecognitionResult.Failure(FailureReason.UNKNOWN, e.message)
         }
     }
 }
