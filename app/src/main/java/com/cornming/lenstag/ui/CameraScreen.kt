@@ -76,8 +76,11 @@ import com.cornming.lenstag.camera.ObjectAnalyzer
 import com.cornming.lenstag.capture.StillImageDetector
 import com.cornming.lenstag.capture.cropBitmap
 import com.cornming.lenstag.capture.rotatedBy
+import com.cornming.lenstag.data.CustomName
+import com.cornming.lenstag.data.CustomNamesStore
 import com.cornming.lenstag.data.MarkedWord
 import com.cornming.lenstag.data.MarkedWordsStore
+import com.cornming.lenstag.data.normalizeKey
 import com.cornming.lenstag.geometry.Box as GeomBox
 import com.cornming.lenstag.geometry.PreviewTransform
 import com.cornming.lenstag.geometry.previewTransform
@@ -193,6 +196,8 @@ fun CameraScreen() {
 
     // 標記過的單字，存在本機（SharedPreferences），跨 session 都在。
     val markedWordsStore = remember { MarkedWordsStore(context) }
+    // 「模型辨識成 X → 顯示成我取的名字」的對照表，跨 App 重開都在
+    val customNamesStore = remember { CustomNamesStore(context) }
     var markedWords by remember { mutableStateOf(markedWordsStore.getAll()) }
     var showingMarkedWords by remember { mutableStateOf(false) }
 
@@ -235,7 +240,7 @@ fun CameraScreen() {
         scope.launch {
             val result = currentRecognizer.recognizeIfReady(cropped, languageAtRequestTime, task)
             photoRegions = photoRegions.map {
-                if (it.id == regionId) it.copy(label = result.toLabelState()) else it
+                if (it.id == regionId) it.copy(label = result.toLabelState(customNamesStore::lookup)) else it
             }
         }
     }
@@ -302,6 +307,45 @@ fun CameraScreen() {
         }
     }
 
+    /**
+     * 使用者在命名對話框按下確定。回傳這個框新的標籤；沒有實際改動就回 null。
+     *
+     * 如果這個框是模型辨識出來的（有 recognizedAs），就把「模型說 X → 顯示成
+     * 這個名字」存成規則——之後任何被辨識成 X 的都會套用，而且畫面上現在其他
+     * 被辨識成 X 的框也會立刻跟著換。從沒被模型辨識過的框只改這一個，不存規則。
+     *
+     * 沒改任何字就按確定是 no-op：很多時候長按只是為了標記單字或查字典，順手
+     * 按了確定。如果這樣也存規則，會把當下的翻譯「凍結」進去——之後換成日文
+     * 翻譯，這個字還會卡在英文。
+     */
+    fun applyRename(current: LabelState?, primary: String, secondary: String?): LabelState.Named? {
+        val named = current as? LabelState.Named
+        if (named != null && named.primary == primary && named.secondary == secondary) return null
+
+        val recognizedAs = named?.recognizedAs
+        val renamed = LabelState.Named(
+            primary = primary,
+            secondary = secondary,
+            custom = true,
+            recognizedAs = recognizedAs,
+        )
+        if (recognizedAs == null) return renamed
+
+        customNamesStore.put(recognizedAs, CustomName(primary, secondary))
+
+        // 畫面上其他同樣被辨識成這個東西的框，立刻換成新名字
+        val key = normalizeKey(recognizedAs)
+        fun sameThing(label: LabelState?) =
+            label is LabelState.Named &&
+                label.recognizedAs != null &&
+                normalizeKey(label.recognizedAs) == key
+        labels.keys.toList().forEach { id ->
+            if (sameThing(labels[id])) labels[id] = renamed
+        }
+        photoRegions = photoRegions.map { if (sameThing(it.label)) it.copy(label = renamed) else it }
+        return renamed
+    }
+
     // 追蹤 ID -> 物件「穩定下來那一刻」裁切出來的圖。Azure 模式下不自動辨識，
     // 改成點框才辨識——但點擊當下手上沒有影像可以裁，所以先把穩定時那張清晰的
     // 裁切圖存起來，點的時候直接拿來用。框消失時一起清掉，不會無限累積。
@@ -322,7 +366,7 @@ fun CameraScreen() {
                 languageAtRequestTime,
                 RecognitionTask.SIMPLE,
             )
-            labels[id] = result.toLabelState()
+            labels[id] = result.toLabelState(customNamesStore::lookup)
         }
     }
 
@@ -693,11 +737,8 @@ fun CameraScreen() {
                 onDismiss = { renamingId = null },
                 onConfirm = { primary, secondary ->
                     if (primary.isNotBlank()) {
-                        labels[id] = LabelState.Named(
-                            primary = primary,
-                            secondary = secondary.ifBlank { null },
-                            custom = true,
-                        )
+                        applyRename(labels[id], primary, secondary.ifBlank { null })
+                            ?.let { labels[id] = it }
                     }
                     renamingId = null
                 },
@@ -721,19 +762,12 @@ fun CameraScreen() {
                 onDismiss = { renamingPhotoRegionId = null },
                 onConfirm = { primary, secondary ->
                     if (primary.isNotBlank()) {
-                        photoRegions = photoRegions.map {
-                            if (it.id == id) {
-                                it.copy(
-                                    label = LabelState.Named(
-                                        primary = primary,
-                                        secondary = secondary.ifBlank { null },
-                                        custom = true,
-                                    ),
-                                )
-                            } else {
-                                it
+                        applyRename(region?.label, primary, secondary.ifBlank { null })
+                            ?.let { renamed ->
+                                photoRegions = photoRegions.map {
+                                    if (it.id == id) it.copy(label = renamed) else it
+                                }
                             }
-                        }
                     }
                     renamingPhotoRegionId = null
                 },

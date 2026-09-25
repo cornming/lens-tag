@@ -1,5 +1,6 @@
 package com.cornming.lenstag.ui
 
+import com.cornming.lenstag.data.CustomName
 import com.cornming.lenstag.recognize.FailureReason
 import com.cornming.lenstag.recognize.RecognitionResult
 
@@ -28,20 +29,49 @@ sealed interface LabelState {
 
     /**
      * 已經有名稱了。
-     * @param primary 原文名稱（繁體中文）
-     * @param secondary 翻譯名稱，沒有翻譯（或辨識時沒要求）就是 null
-     * @param custom true 表示這是使用者自己輸入的，不是模型辨識的
+     * @param primary 顯示的原文名稱
+     * @param secondary 顯示的翻譯名稱，沒有就是 null
+     * @param custom true 表示顯示的是使用者自訂的名稱，不是模型原本的說法
+     * @param recognizedAs 模型「原本」把它辨識成什麼，是自訂名稱對照表的鑰匙。
+     *   畫面上顯示的是自訂名稱時，得靠這個才知道要更新哪一筆對照；
+     *   從來沒被模型辨識過（例如辨識失敗後直接手動命名）就是 null，
+     *   這種情況只改這一個框，不會存成規則
      */
     data class Named(
         val primary: String,
         val secondary: String? = null,
         val custom: Boolean = false,
+        val recognizedAs: String? = null,
     ) : LabelState
 }
 
-/** 把辨識結果轉成畫面上的標籤狀態。 */
-fun RecognitionResult.toLabelState(): LabelState = when (this) {
-    is RecognitionResult.Success -> LabelState.Named(label.primary, label.secondary)
+/**
+ * 把辨識結果轉成畫面上的標籤狀態，同時查自訂名稱對照表。
+ *
+ * 這就是「下次看到門，就顯示我取的名字」實際發生的地方：模型說這是「門」，
+ * 如果使用者之前把「門」改名過，就顯示那個名字，而不是模型的說法。
+ * lookup 以函式傳入，這樣這段邏輯可以直接測試，不需要真的 SharedPreferences。
+ */
+fun RecognitionResult.toLabelState(
+    lookup: (recognizedAs: String) -> CustomName? = { null },
+): LabelState = when (this) {
+    is RecognitionResult.Success -> {
+        val key = label.primary
+        lookup(key)
+            ?.let { custom ->
+                LabelState.Named(
+                    primary = custom.primary,
+                    secondary = custom.secondary,
+                    custom = true,
+                    recognizedAs = key,
+                )
+            }
+            ?: LabelState.Named(
+                primary = label.primary,
+                secondary = label.secondary,
+                recognizedAs = key,
+            )
+    }
     is RecognitionResult.Failure -> LabelState.Failed(reason, detail)
 }
 
