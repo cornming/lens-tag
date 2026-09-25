@@ -1,10 +1,15 @@
 package com.cornming.lenstag.ui
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.graphics.Bitmap
 import android.net.Uri
 import android.util.Log
 import android.util.Size as AndroidSize
+import androidx.activity.compose.BackHandler
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ExperimentalGetImage
 import androidx.camera.core.ImageAnalysis
@@ -45,6 +50,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -61,6 +67,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
@@ -185,15 +192,15 @@ fun CameraScreen() {
     // 顯示模式（原文／翻譯／雙語）與翻譯目標語言。
     // 注意：改變這兩個設定只影響「之後新辨識」的物件，已經辨識過的物件
     // 不會自動重新查詢——這是刻意簡化，避免每次調設定都重打 Gemini Nano。
-    var displayMode by remember { mutableStateOf(DisplayMode.BOTH) }
-    var secondaryLanguage by remember { mutableStateOf("English") }
+    var displayMode by rememberSaveable { mutableStateOf(DisplayMode.BOTH) }
+    var secondaryLanguage by rememberSaveable { mutableStateOf("English") }
     var editingLanguage by remember { mutableStateOf(false) }
 
     // 畫面更新頻率（兩次 ML Kit 偵測間至少間隔多久）。analysisSettings 是傳給
     // ObjectAnalyzer 的可變容器，updateIntervalMs 是給 UI 顯示/互動用的 Compose
     // state，兩者用 LaunchedEffect 同步，這樣調整設定不需要重建整個相機 pipeline。
     val analysisSettings = remember { AnalysisSettings() }
-    var updateIntervalMs by remember { mutableStateOf(150L) }
+    var updateIntervalMs by rememberSaveable { mutableStateOf(150L) }
     var editingFrequency by remember { mutableStateOf(false) }
     LaunchedEffect(updateIntervalMs) {
         analysisSettings.intervalMs = updateIntervalMs
@@ -213,7 +220,9 @@ fun CameraScreen() {
 
     // 一般 / VR cardboard / 拍照模式。frameSink 只有 VR 模式才會有 callback，
     // 平常模式 ObjectAnalyzer 完全不會多做整影格 Bitmap 轉換那筆開銷。
-    var viewMode by remember { mutableStateOf(ViewMode.NORMAL) }
+    // rememberSaveable：畫面重建（轉向、系統回收）後還記得在哪個模式。
+    // 之前用 remember，進 VR 要把手機轉橫，一轉畫面重建就跳回一般模式了
+    var viewMode by rememberSaveable { mutableStateOf(ViewMode.NORMAL) }
     val frameSink = remember { FrameSink() }
 
     // 拍照模式：拍下來的照片、上面的可辨識區域、以及拍完後偵測中的狀態。
@@ -295,6 +304,37 @@ fun CameraScreen() {
         photoBitmap = null
         photoRegions = emptyList()
         renamingPhotoRegionId = null
+    }
+
+    // 照片（Bitmap）存不進去重建前的狀態，如果模式是從重建中還原回拍照模式、
+    // 照片卻不在了，就退回一般模式，不要卡在一個空白的拍照畫面
+    LaunchedEffect(viewMode, photoBitmap) {
+        if (viewMode == ViewMode.PHOTO && photoBitmap == null) viewMode = ViewMode.NORMAL
+    }
+
+    // 螢幕方向：VR 鎖橫向（放進眼鏡本來就是橫的），其他模式鎖直向。
+    // 之前沒處理，轉橫向時 Android 會重建畫面，不只 VR 會跳掉，一般模式轉一下
+    // 手機，顯示模式、翻譯語言這些設定也會全部回到預設值。
+    val activity = remember(context) { context.findActivity() }
+    LaunchedEffect(viewMode) {
+        activity?.requestedOrientation = if (viewMode == ViewMode.VR_CARDBOARD) {
+            ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        } else {
+            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        }
+    }
+
+    // 相機畫面開著就保持螢幕常亮。VR 模式靠凝視操作、完全不碰螢幕，系統的自動
+    // 關閉螢幕計時器照跑的話，戴到一半畫面就黑了
+    val hostView = LocalView.current
+    DisposableEffect(hostView) {
+        hostView.keepScreenOn = true
+        onDispose { hostView.keepScreenOn = false }
+    }
+
+    // 返回鍵／返回手勢：在 VR 或拍照模式時先回到一般模式，而不是直接離開 App
+    BackHandler(enabled = viewMode != ViewMode.NORMAL) {
+        if (viewMode == ViewMode.PHOTO) exitPhotoMode() else viewMode = ViewMode.NORMAL
     }
 
     var latestFrame by remember { mutableStateOf<ImageBitmap?>(null) }
@@ -562,7 +602,7 @@ fun CameraScreen() {
                     recognizePhotoRegion(id)
                 },
             )
-        } else if (viewMode == ViewMode.NORMAL) {
+        } else if (viewMode != ViewMode.VR_CARDBOARD) {
             Canvas(
                 modifier = Modifier
                     .fillMaxSize()
@@ -1046,4 +1086,11 @@ private fun UpdateFrequencyDialog(
         confirmButton = { TextButton(onClick = { onConfirm(value.toLong()) }) { Text("確定") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
+}
+
+/** Compose 拿到的 context 不一定直接是 Activity（可能包了幾層），往回拆找到它。 */
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }

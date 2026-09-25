@@ -28,6 +28,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -77,9 +78,15 @@ private fun LensTagApp() {
 
     // 開啟 App 時順便靜靜檢查一次有沒有新版本；失敗（例如沒網路）就當作沒有更新，
     // 不影響主要的相機功能。
+    // updateChecked 用 rememberSaveable：進出 VR 會鎖定螢幕方向、讓畫面重建，
+    // 沒有這個的話每進出一次 VR 就重查一次 GitHub，有新版時對話框還會一直跳出來
     var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
+    var updateChecked by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(Unit) {
-        updateInfo = UpdateChecker(BuildConfig.VERSION_CODE).checkForUpdate()
+        if (!updateChecked) {
+            updateChecked = true
+            updateInfo = UpdateChecker(BuildConfig.VERSION_CODE).checkForUpdate()
+        }
     }
 
     // App 內下載＋安裝更新，不用使用者自己開瀏覽器找檔案
