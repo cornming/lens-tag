@@ -53,6 +53,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -66,6 +67,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextMeasurer
@@ -101,6 +103,13 @@ import com.cornming.lenstag.recognize.RecognizerKind
 import com.cornming.lenstag.recognize.RecognizerSettings
 import com.cornming.lenstag.recognize.RecognizerSettingsStore
 import com.cornming.lenstag.recognize.recognizeIfReady
+import com.cornming.lenstag.vr.VrEngine
+import com.cornming.lenstag.vr.VrLensParams
+import com.cornming.lenstag.vr.VrOverlayItem
+import com.cornming.lenstag.vr.VrOverlayState
+import com.cornming.lenstag.vr.VrRenderer
+import com.cornming.lenstag.vr.VrSettingsStore
+import com.cornming.lenstag.vr.mmToPx
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.max
@@ -112,6 +121,9 @@ private const val BOX_GRACE_PERIOD_MS = 500L
 
 /** 標籤文字跟框之間、以及跟螢幕邊緣之間留的間距 */
 private const val LABEL_PADDING_PX = 8f
+
+/** VR 畫面裡告訴使用者怎麼退出的提示。 */
+private const val VR_EXIT_HINT = "長按螢幕或按返回鍵退出 VR"
 
 /** VR 模式下，準星停留在同一個框裡多久算「短停留」（唸發音，等同一般模式短按）。 */
 private const val DWELL_SHORT_MS = 1500L
@@ -204,6 +216,10 @@ fun CameraScreen() {
     val analysisSettings = remember { AnalysisSettings() }
     var updateIntervalMs by rememberSaveable { mutableStateOf(150L) }
     var editingFrequency by remember { mutableStateOf(false) }
+
+    // VR 設定（引擎、鏡片間距、變形校正），存在本機
+    val vrSettingsStore = remember { VrSettingsStore(context) }
+    var vrSettings by remember { mutableStateOf(vrSettingsStore.load()) }
     LaunchedEffect(updateIntervalMs) {
         analysisSettings.intervalMs = updateIntervalMs
     }
@@ -346,8 +362,10 @@ fun CameraScreen() {
     var gazeProgress by remember { mutableStateOf(0f) }
     var gazePastShort by remember { mutableStateOf(false) }
 
-    LaunchedEffect(viewMode) {
-        frameSink.onFrame = if (viewMode == ViewMode.VR_CARDBOARD) {
+    LaunchedEffect(viewMode, vrSettings.engine) {
+        // 只有「相容」引擎需要每格把分析影格轉成 Bitmap；流暢引擎直接吃相機預覽，
+        // 不用做這筆轉換，這也讓流暢模式比舊版更省電
+        frameSink.onFrame = if (viewMode == ViewMode.VR_CARDBOARD && vrSettings.engine == VrEngine.LEGACY) {
             { bitmap -> latestFrame = bitmap.asImageBitmap() }
         } else {
             null
@@ -527,6 +545,81 @@ fun CameraScreen() {
         }
     }
 
+    // ---- VR 流暢引擎（OpenGL） ----
+    val previewUseCase = remember { mutableStateOf<Preview?>(null) }
+    val previewViewRef = remember { mutableStateOf<PreviewView?>(null) }
+    // 命名刻意避開 density：在 Canvas 的繪製區塊裡 density 是繪製範圍自己的屬性，
+    // 外面有同名區域變數的話會被悄悄蓋掉
+    val screenDensity = LocalDensity.current
+    val vrRenderer = remember {
+        VrRenderer(
+            mainExecutor = ContextCompat.getMainExecutor(context),
+            density = screenDensity.density,
+            fontScale = screenDensity.fontScale,
+        )
+    }
+    val useGlVr = viewMode == ViewMode.VR_CARDBOARD && vrSettings.engine == VrEngine.GL
+
+    LaunchedEffect(vrRenderer) {
+        // 流暢引擎啟動失敗（例如這支手機的 GPU 不支援某個語法）→ 自動退回相容模式，
+        // 不讓 App 閃退，也不用等改版
+        vrRenderer.onError = { reason ->
+            Log.e("CameraScreen", "VR 流暢模式啟動失敗：$reason")
+            val fallback = vrSettings.copy(engine = VrEngine.LEGACY)
+            vrSettings = fallback
+            vrSettingsStore.save(fallback)
+            vrMessage = "流暢模式無法啟動，已切換成相容模式" to System.currentTimeMillis()
+        }
+        // GL 內容被系統重建時，之前交給相機的畫面來源失效了：先切回一般預覽、
+        // 再切回來，逼相機重新跟渲染器要一次（換不同的來源一定會觸發重新要求）
+        vrRenderer.onSurfaceTextureRecreated = {
+            val preview = previewUseCase.value
+            val previewView = previewViewRef.value
+            if (preview != null && previewView != null) {
+                preview.surfaceProvider = previewView.surfaceProvider
+                preview.surfaceProvider = vrRenderer.surfaceProvider
+            }
+        }
+    }
+
+    // 相機畫面要送去哪：流暢 VR 送進 GL 渲染器，其他情況送回一般預覽
+    LaunchedEffect(useGlVr, previewUseCase.value, previewViewRef.value) {
+        val preview = previewUseCase.value ?: return@LaunchedEffect
+        val previewView = previewViewRef.value ?: return@LaunchedEffect
+        preview.surfaceProvider = if (useGlVr) vrRenderer.surfaceProvider else previewView.surfaceProvider
+    }
+
+    // 鏡片參數：公釐換算成這支手機螢幕的像素
+    val xdpi = context.resources.displayMetrics.xdpi
+    LaunchedEffect(vrSettings, xdpi) {
+        vrRenderer.lens = VrLensParams(
+            lensSeparationPx = mmToPx(vrSettings.lensSeparationMm, xdpi),
+            k1 = vrSettings.distortion,
+            k2 = 0f,
+        )
+    }
+
+    // 疊加層（框、準星、提示）：相關狀態一變就產生新的一份交給渲染器。
+    // 用 snapshotFlow 是因為這些狀態平常只在繪製時被讀，不會觸發重組
+    LaunchedEffect(useGlVr) {
+        if (!useGlVr) return@LaunchedEffect
+        snapshotFlow {
+            val (sw, sh) = sourceSize
+            VrOverlayState(
+                items = trackedBoxes.map { (id, tracked) ->
+                    val label = labels[id] ?: LabelState.Unknown
+                    VrOverlayItem(tracked.box, label.displayText(displayMode), labelArgb(label))
+                },
+                sourceWidth = sw,
+                sourceHeight = sh,
+                gazeProgress = gazeProgress,
+                gazeLongPhase = gazePastShort,
+                message = vrMessage?.first,
+                hint = VR_EXIT_HINT,
+            )
+        }.collect { vrRenderer.overlayState = it }
+    }
+
     fun onDetected(result: DetectionResult) {
         val now = System.currentTimeMillis()
         sourceSize = result.sourceWidth to result.sourceHeight
@@ -558,6 +651,9 @@ fun CameraScreen() {
                     val preview = Preview.Builder().build().also {
                         it.surfaceProvider = previewView.surfaceProvider
                     }
+                    // 記住這兩個，VR 流暢模式要把相機畫面改送進 GL 渲染器
+                    previewUseCase.value = preview
+                    previewViewRef.value = previewView
 
                     // 分析解析度故意設低（640x480 等級即可），不需要跟預覽一樣高解析度，
                     // 這樣每一次 ML Kit 推論的運算量小很多，也是降低發熱的一環。
@@ -686,8 +782,16 @@ fun CameraScreen() {
                 val transform = previewTransform(sw, sh, size.width, size.height)
                 drawDetections(trackedBoxes, labels, displayMode, transform, textMeasurer)
             }
+        } else if (vrSettings.engine == VrEngine.GL) {
+            GlVrView(
+                renderer = vrRenderer,
+                onSizeChanged = { vrContainerSize = it },
+                // 眼鏡側邊按鈕（點螢幕）：立刻選取；拿出來長按：退出
+                onTap = { vrGazedId?.let { vrSelect(it) } },
+                onLongPress = { viewMode = ViewMode.NORMAL },
+            )
         } else {
-            // VR cardboard：左右各畫一次同樣的內容（用最新一張分析影格的 Bitmap，
+            // VR 相容模式：左右各畫一次同樣的內容（用最新一張分析影格的 Bitmap，
             // 不是即時 PreviewView，畫面更新頻率跟 ObjectAnalyzer 的節流間隔一樣，
             // 大約每秒 6-7 張，不是流暢的 30fps 視訊，但這個模式本來就是輔助用途）。
             Row(
@@ -745,7 +849,7 @@ fun CameraScreen() {
                             }
                             drawVrText(
                                 textMeasurer,
-                                "長按螢幕或按返回鍵退出 VR",
+                                VR_EXIT_HINT,
                                 size.height * 0.9f,
                                 size.width,
                                 12.sp,
@@ -803,7 +907,7 @@ fun CameraScreen() {
                     Text("拍照辨識")
                 }
                 Button(onClick = { editingFrequency = true }) {
-                    Text("更新頻率")
+                    Text("設定")
                 }
                 Button(
                     onClick = {
@@ -924,16 +1028,27 @@ fun CameraScreen() {
         }
 
         if (editingFrequency) {
-            UpdateFrequencyDialog(
+            DisplaySettingsDialog(
                 initialIntervalMs = updateIntervalMs,
+                initialVr = vrSettings,
                 onDismiss = { editingFrequency = false },
-                onConfirm = { ms ->
+                onConfirm = { ms, vr ->
                     updateIntervalMs = ms
+                    vrSettings = vr
+                    vrSettingsStore.save(vr)
                     editingFrequency = false
                 },
             )
         }
     }
+}
+
+/** 標籤狀態對應的框線顏色（ARGB），給 VR 流暢引擎的疊加層用，跟 Compose 畫的顏色一致。 */
+private fun labelArgb(state: LabelState): Int = when (state) {
+    is LabelState.Named -> 0xFF4CAF50.toInt()
+    LabelState.Recognizing -> 0xFFFFC107.toInt()
+    is LabelState.Failed -> 0xFFF44336.toInt()
+    LabelState.Unknown -> 0xFF9E9E9E.toInt()
 }
 
 /** 在單眼畫面裡水平置中畫一行帶半透明底的文字（VR 提示用）。 */
@@ -1142,36 +1257,6 @@ private fun MarkedWordsDialog(
     )
 }
 
-@Composable
-private fun UpdateFrequencyDialog(
-    initialIntervalMs: Long,
-    onDismiss: () -> Unit,
-    onConfirm: (Long) -> Unit,
-) {
-    var value by remember { mutableStateOf(initialIntervalMs.toFloat()) }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("畫面更新頻率") },
-        text = {
-            Column {
-                val fps = 1000f / value
-                Text("間隔 ${value.toInt()} 毫秒（約每秒 ${"%.1f".format(fps)} 次）", fontSize = 12.sp)
-                Text(
-                    "數字越小越靈敏，但比較耗電發熱；數字越大越省電，畫面更新會比較慢。",
-                    fontSize = 12.sp,
-                )
-                Slider(
-                    value = value,
-                    onValueChange = { value = it },
-                    valueRange = 80f..1000f,
-                )
-            }
-        },
-        confirmButton = { TextButton(onClick = { onConfirm(value.toLong()) }) { Text("確定") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
-    )
-}
 
 /** Compose 拿到的 context 不一定直接是 Activity（可能包了幾層），往回拆找到它。 */
 private tailrec fun Context.findActivity(): Activity? = when (this) {
