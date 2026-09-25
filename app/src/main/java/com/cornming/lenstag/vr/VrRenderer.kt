@@ -61,10 +61,15 @@ class VrRenderer(
     /** 鏡片參數；主執行緒寫、GL 執行緒讀。 */
     @Volatile var lens: VrLensParams = VrLensParams(0f, 0f, 0f)
 
+    /** 螢幕目前轉了幾度（0/90/180/270）；主執行緒寫、GL 執行緒讀。 */
+    @Volatile var displayRotationDegrees: Int = 90
+
     // CameraX 給的畫面資訊（主執行緒寫、GL 執行緒讀）
     @Volatile private var bufferWidth = 0
     @Volatile private var bufferHeight = 0
     @Volatile private var rotationDegrees = 0
+    // 相機是不是已經把方向寫進 SurfaceTexture 了（直接接相機時通常是）
+    @Volatile private var hasCameraTransform = true
     @Volatile private var surfaceTexture: SurfaceTexture? = null
     @Volatile private var failed = false
 
@@ -86,7 +91,6 @@ class VrRenderer(
     private var eyeHeight = 0
     private var overlayBitmap: Bitmap? = null
     private var lastOverlay: VrOverlayState? = null
-    private var loggedUnexpectedRotation = false
     private val texMatrix = FloatArray(16)
     private val quad = FullScreenQuad()
 
@@ -113,6 +117,16 @@ class VrRenderer(
         bufferHeight = size.height
         request.setTransformationInfoListener(mainExecutor) { info ->
             rotationDegrees = info.rotationDegrees
+            hasCameraTransform = info.hasCameraTransform()
+            Log.d(
+                TAG,
+                "相機畫面方向：rotationDegrees=${info.rotationDegrees}，" +
+                    "hasCameraTransform=${info.hasCameraTransform()}，" +
+                    "螢幕旋轉=$displayRotationDegrees，" +
+                    "逆時針補正=${cameraQuarterTurnsCcw(
+                        info.hasCameraTransform(), displayRotationDegrees, info.rotationDegrees,
+                    ) * 90} 度",
+            )
         }
         val surface = Surface(st)
         request.provideSurface(surface, mainExecutor) { surface.release() }
@@ -249,22 +263,17 @@ class VrRenderer(
             GLES20.glGetUniformLocation(cameraProgram, "uTexMatrix"), 1, false, texMatrix, 0,
         )
 
-        // VR 鎖橫向，相機緩衝區只會需要轉 0 或 180 度（90/270 只有直向才會出現）。
-        // 轉 90/270 的取樣方向沒辦法在沒有實機的情況下確認對錯，所以不去猜，只記錄下來。
+        // 轉正後的畫面尺寸：原始緩衝區轉了 rotationDegrees，轉 90/270 時寬高對調。
+        // 這跟「相機有沒有先把方向寫進 SurfaceTexture」無關——兩種情況最後顯示的
+        // 都是「原始畫面轉 rotationDegrees」，差別只在 shader 要補轉多少
         val rotation = rotationDegrees
         val quarterTurn = rotation == 90 || rotation == 270
-        if (quarterTurn && !loggedUnexpectedRotation) {
-            loggedUnexpectedRotation = true
-            Log.w(TAG, "VR 模式出現非預期的旋轉角度 $rotation，畫面方向可能不對")
-        }
         val imageWidth = if (quarterTurn) bufferHeight else bufferWidth
         val imageHeight = if (quarterTurn) bufferWidth else bufferHeight
         val (cropX, cropY) = fillCenterCropScale(imageWidth, imageHeight, eyeWidth, eyeHeight)
         GLES20.glUniform2f(GLES20.glGetUniformLocation(cameraProgram, "uCropScale"), cropX, cropY)
-        GLES20.glUniform1f(
-            GLES20.glGetUniformLocation(cameraProgram, "uFlip"),
-            if (rotation == 180) 1f else 0f,
-        )
+        val turns = cameraQuarterTurnsCcw(hasCameraTransform, displayRotationDegrees, rotation)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(cameraProgram, "uTurns"), turns.toFloat())
         quad.draw(cameraProgram)
     }
 

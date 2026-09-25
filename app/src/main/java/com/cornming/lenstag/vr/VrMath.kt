@@ -63,3 +63,54 @@ internal fun distortSourceUv(
     val f = 1f + k1 * r2 + k2 * r2 * r2
     return (dx * f / sx + 0.5f) to (dy * f / sy + 0.5f)
 }
+
+/**
+ * 相機畫面顯示時要「逆時針」轉幾個 90 度才會是正的。
+ *
+ * 這裡曾經寫錯過，造成實機上 VR 畫面整個轉了 90 度：相機畫面直接送進
+ * SurfaceTexture 時，相機會把「感光元件的方向」寫進去，SurfaceTexture 的
+ * 貼圖矩陣已經先把畫面轉成「手機自然方向（直向）的正向」了
+ * （CameraX 的 hasCameraTransform() 為 true）。這時候要補的是「螢幕目前轉了
+ * 多少」，而不是 CameraX 給的 rotationDegrees——後者是給「沒被相機轉過的
+ * 原始畫面」用的。官方文件 SurfaceRequest.TransformationInfo 有寫這個分別。
+ *
+ * 方向推導（以後置鏡頭、感光元件方向 90、螢幕轉 90 度的橫向為例）：
+ * - 感光元件方向 90 的定義：原始畫面要順時針轉 90 度才會在直向時是正的，
+ *   所以貼圖矩陣給出的畫面 = 原始畫面順時針轉 90 度
+ * - 橫向時 CameraX 算出原始畫面的 rotationDegrees 是 0，也就是原始畫面在
+ *   橫向本來就是正的
+ * - 所以貼圖矩陣給的畫面要再「逆時針」轉 90 度轉回來 → 逆時針轉「螢幕旋轉角度」
+ *
+ * 沒有相機方向時（例如畫面中間經過其他處理），就照 rotationDegrees 順時針轉，
+ * 換算成逆時針就是 360 - rotationDegrees。
+ */
+internal fun cameraQuarterTurnsCcw(
+    hasCameraTransform: Boolean,
+    displayRotationDegrees: Int,
+    rotationDegrees: Int,
+): Int = if (hasCameraTransform) {
+    (((displayRotationDegrees / 90) % 4) + 4) % 4
+} else {
+    (((360 - rotationDegrees) % 360) / 90 + 4) % 4
+}
+
+/**
+ * 要讓顯示出來的畫面「逆時針轉 turns 個 90 度」，輸出畫面上 (u, v) 這一點
+ * 要去原本貼圖的哪裡取色。uv 的原點在左下、v 往上（OpenGL 慣例）。
+ * 跟 GlUtil 裡相機 shader 的 rotateCcw 同一套，改一邊要一起改另一邊。
+ */
+internal fun rotateSampleCcw(u: Float, v: Float, turns: Int): Pair<Float, Float> =
+    when (((turns % 4) + 4) % 4) {
+        0 -> u to v
+        1 -> v to (1f - u)
+        2 -> (1f - u) to (1f - v)
+        else -> (1f - v) to u
+    }
+
+/** Surface.ROTATION_0～ROTATION_270（常數值 0～3）換算成角度。 */
+internal fun surfaceRotationToDegrees(rotation: Int): Int = when (rotation) {
+    1 -> 90
+    2 -> 180
+    3 -> 270
+    else -> 0
+}

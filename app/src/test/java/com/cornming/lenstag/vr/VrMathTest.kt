@@ -117,6 +117,59 @@ class VrMathTest {
         assertEquals(hShift, vShift, DELTA)
     }
 
+    @Test
+    fun `with the camera orientation baked in, compensate by the display rotation`() {
+        // 實機截圖發現 VR 畫面轉了 90 度的那個錯：相機直接接 SurfaceTexture 時，
+        // 貼圖矩陣已經先轉成「直向的正向」，要補的是螢幕旋轉，不是 rotationDegrees
+        assertEquals(1, cameraQuarterTurnsCcw(hasCameraTransform = true, displayRotationDegrees = 90, rotationDegrees = 0))
+        assertEquals(3, cameraQuarterTurnsCcw(hasCameraTransform = true, displayRotationDegrees = 270, rotationDegrees = 180))
+        assertEquals(0, cameraQuarterTurnsCcw(hasCameraTransform = true, displayRotationDegrees = 0, rotationDegrees = 90))
+    }
+
+    @Test
+    fun `without the camera orientation, rotate clockwise by rotationDegrees`() {
+        assertEquals(0, cameraQuarterTurnsCcw(hasCameraTransform = false, displayRotationDegrees = 90, rotationDegrees = 0))
+        assertEquals(2, cameraQuarterTurnsCcw(hasCameraTransform = false, displayRotationDegrees = 270, rotationDegrees = 180))
+        // 順時針 90 = 逆時針 270
+        assertEquals(3, cameraQuarterTurnsCcw(hasCameraTransform = false, displayRotationDegrees = 0, rotationDegrees = 90))
+        assertEquals(1, cameraQuarterTurnsCcw(hasCameraTransform = false, displayRotationDegrees = 0, rotationDegrees = 270))
+    }
+
+    @Test
+    fun `landscape with baked camera orientation puts the sky back at the top`() {
+        // 把物理推導寫成測試：手機橫拿（螢幕轉 90 度）時，貼圖矩陣給的是「直向的
+        // 正向」畫面，天空（世界的上方）落在這張畫面的「右邊」。補正之後，
+        // 輸出畫面的「頂端正中央」必須去取原本畫面「右邊正中央」的顏色——
+        // 也就是天空回到上面。如果有人把旋轉方向改反，這裡會取到左邊（地上）。
+        val turns = cameraQuarterTurnsCcw(hasCameraTransform = true, displayRotationDegrees = 90, rotationDegrees = 0)
+        val (u, v) = rotateSampleCcw(u = 0.5f, v = 1.0f, turns = turns) // 輸出的頂端中央（v 往上）
+        assertEquals(1.0f, u, DELTA) // 原本畫面的右邊
+        assertEquals(0.5f, v, DELTA)
+    }
+
+    @Test
+    fun `quarter turns compose back to where they started`() {
+        // 轉四次 90 度要回到原點；也順便確認每一種轉法都是真正的旋轉、不是鏡像
+        val start = 0.2f to 0.7f
+        var p = start
+        repeat(4) { p = rotateSampleCcw(p.first, p.second, 1) }
+        assertEquals(start.first, p.first, DELTA)
+        assertEquals(start.second, p.second, DELTA)
+
+        val twice = rotateSampleCcw(rotateSampleCcw(0.2f, 0.7f, 1).first, rotateSampleCcw(0.2f, 0.7f, 1).second, 1)
+        val half = rotateSampleCcw(0.2f, 0.7f, 2)
+        assertEquals(half.first, twice.first, DELTA)
+        assertEquals(half.second, twice.second, DELTA)
+    }
+
+    @Test
+    fun `surface rotation constants convert to degrees`() {
+        assertEquals(0, surfaceRotationToDegrees(0))
+        assertEquals(90, surfaceRotationToDegrees(1))
+        assertEquals(180, surfaceRotationToDegrees(2))
+        assertEquals(270, surfaceRotationToDegrees(3))
+    }
+
     private companion object {
         const val DELTA = 0.001f
     }

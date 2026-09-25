@@ -113,6 +113,7 @@ import com.cornming.lenstag.vr.VrOverlayState
 import com.cornming.lenstag.vr.VrRenderer
 import com.cornming.lenstag.vr.VrSettingsStore
 import com.cornming.lenstag.vr.mmToPx
+import com.cornming.lenstag.vr.surfaceRotationToDegrees
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.max
@@ -336,10 +337,13 @@ fun CameraScreen() {
     // 螢幕方向：VR 鎖橫向（放進眼鏡本來就是橫的），其他模式鎖直向。
     // 之前沒處理，轉橫向時 Android 會重建畫面，不只 VR 會跳掉，一般模式轉一下
     // 手機，顯示模式、翻譯語言這些設定也會全部回到預設值。
+    // VR 刻意用「固定一個橫向」而不是「兩個橫向都可以」：在兩個橫向之間翻轉
+    // 180 度時 Android 不會重建畫面，相機的方向資訊就不會更新，翻過去之後
+    // 框的位置會整個上下顛倒。如果放進眼鏡後畫面整個是倒的，把手機轉 180 度放。
     val activity = remember(context) { context.findActivity() }
     LaunchedEffect(viewMode) {
         activity?.requestedOrientation = if (viewMode == ViewMode.VR_CARDBOARD) {
-            ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
         } else {
             ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         }
@@ -578,6 +582,12 @@ fun CameraScreen() {
         )
     }
     val useGlVr = viewMode == ViewMode.VR_CARDBOARD && vrSettings.engine == VrEngine.GL
+
+    // 螢幕目前轉了幾度：渲染器靠它決定相機畫面要補轉多少（見 cameraQuarterTurnsCcw）。
+    // VR 固定一個橫向，進去之後不會再變
+    SideEffect {
+        vrRenderer.displayRotationDegrees = surfaceRotationToDegrees(hostView.display?.rotation ?: 1)
+    }
 
     LaunchedEffect(vrRenderer) {
         // 流暢引擎啟動失敗（例如這支手機的 GPU 不支援某個語法）→ 自動退回相容模式，

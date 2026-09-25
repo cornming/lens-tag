@@ -96,8 +96,9 @@ void main() {
 """
 
 /**
- * 相機畫面：從相機的外部貼圖取色。先依 FILL_CENTER 裁切，必要時轉 180 度，
- * 最後套 SurfaceTexture 給的貼圖矩陣（處理相機緩衝區本身的翻轉）。
+ * 相機畫面：從相機的外部貼圖取色。先依 FILL_CENTER 裁切，再把畫面逆時針轉
+ * uTurns 個 90 度（怎麼算見 VrMath.cameraQuarterTurnsCcw），最後套
+ * SurfaceTexture 給的貼圖矩陣。rotateCcw 跟 VrMath.rotateSampleCcw 同一套。
  * 「#extension」必須是第一個非註解的指令，所以放最前面。
  */
 internal const val CAMERA_FRAGMENT_SHADER = """#extension GL_OES_EGL_image_external : require
@@ -110,10 +111,16 @@ varying vec2 vUv;
 uniform samplerExternalOES uCamera;
 uniform mat4 uTexMatrix;
 uniform vec2 uCropScale;
-uniform float uFlip;
+uniform float uTurns;
+vec2 rotateCcw(vec2 p, float turns) {
+    if (turns < 0.5) return p;
+    if (turns < 1.5) return vec2(p.y, 1.0 - p.x);
+    if (turns < 2.5) return vec2(1.0 - p.x, 1.0 - p.y);
+    return vec2(1.0 - p.y, p.x);
+}
 void main() {
     vec2 p = (vUv - 0.5) * uCropScale + 0.5;
-    p = mix(p, vec2(1.0) - p, uFlip);
+    p = rotateCcw(p, uTurns);
     vec2 t = (uTexMatrix * vec4(p, 0.0, 1.0)).xy;
     gl_FragColor = texture2D(uCamera, t);
 }
