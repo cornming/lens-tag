@@ -2,19 +2,16 @@ package com.cornming.lenstag.recognize
 
 import android.content.Context
 
-/**
- * 要用哪一種辨識方式。
- *
- * autoRecognizeLive：即時模式下，物件一穩定下來要不要「自動」送去辨識。
- * - 手機內建 AI 是免費的，自動辨識沒有成本，維持原本的體驗
- * - Azure 每次呼叫都要錢，而即時模式每出現一個新的追蹤 ID 就會觸發一次——
- *   拿著手機走一圈，追蹤 ID 不斷產生，可能幾十次呼叫就出去了。所以 Azure
- *   模式下改成「點框才辨識」，每一次付費呼叫都是使用者有意識的動作
- */
-enum class RecognizerKind(val label: String, val autoRecognizeLive: Boolean) {
-    ON_DEVICE("手機內建 AI", autoRecognizeLive = true),
-    AZURE("Azure AI Foundry", autoRecognizeLive = false),
+/** 要用哪一種辨識方式。 */
+enum class RecognizerKind(val label: String) {
+    ON_DEVICE("手機內建 AI"),
+    AZURE("Azure AI Foundry"),
 }
+
+/** 每分鐘呼叫上限的預設值與可調範圍。 */
+const val DEFAULT_MAX_CALLS_PER_MINUTE = 20
+const val MIN_MAX_CALLS_PER_MINUTE = 10
+const val MAX_MAX_CALLS_PER_MINUTE = 120
 
 /**
  * Azure AI Foundry 的連線設定。
@@ -33,6 +30,19 @@ data class AzureSettings(
     val apiKey: String = "",
     val simpleModel: String = "",
     val complexModel: String = "",
+    /**
+     * 成本保護：開著的時候，即時模式不自動送 Azure，要點框才送。
+     * 即時模式每出現一個新的追蹤 ID 就會觸發一次辨識——手機內建 AI 免費無所謂，
+     * 但 Azure 每次都要錢，拿著手機走一圈追蹤 ID 不斷產生，可能幾十次呼叫就出去了。
+     * 預設開著；想要即時模式也自動用 Azure 辨識（體驗比較流暢）就關掉。
+     */
+    val liveCostProtection: Boolean = true,
+    /**
+     * 每分鐘最多幾次 Azure 呼叫。刻意跟上面的開關分開、而且永遠生效：它防的不是
+     * 正常使用，是程式邏輯出錯導致狂打 API，這種情況關掉成本保護的人一樣會碰到。
+     * 但關掉成本保護後正常使用也可能超過 20 次，所以要能調高。
+     */
+    val maxCallsPerMinute: Int = DEFAULT_MAX_CALLS_PER_MINUTE,
 ) {
     fun isUsable(): Boolean =
         endpoint.isNotBlank() && apiKey.isNotBlank() && simpleModel.isNotBlank()
@@ -51,7 +61,16 @@ data class AzureSettings(
 data class RecognizerSettings(
     val kind: RecognizerKind = RecognizerKind.ON_DEVICE,
     val azure: AzureSettings = AzureSettings(),
-)
+) {
+    /**
+     * 即時模式下，物件一穩定就自動送去辨識嗎？
+     * 手機內建 AI 免費，永遠自動；Azure 看成本保護開關。
+     */
+    fun shouldAutoRecognizeLive(): Boolean = when (kind) {
+        RecognizerKind.ON_DEVICE -> true
+        RecognizerKind.AZURE -> !azure.liveCostProtection
+    }
+}
 
 /**
  * 設定的本機儲存。
@@ -75,6 +94,11 @@ class RecognizerSettingsStore(context: Context) {
                 apiKey = prefs.getString(KEY_API_KEY, "").orEmpty(),
                 simpleModel = prefs.getString(KEY_SIMPLE_MODEL, "").orEmpty(),
                 complexModel = prefs.getString(KEY_COMPLEX_MODEL, "").orEmpty(),
+                // 舊版本沒存過這兩個欄位，讀不到就用預設值（保護開著、上限 20）
+                liveCostProtection = prefs.getBoolean(KEY_COST_PROTECTION, true),
+                maxCallsPerMinute = clampMaxCalls(
+                    prefs.getInt(KEY_MAX_CALLS, DEFAULT_MAX_CALLS_PER_MINUTE),
+                ),
             ),
         )
     }
@@ -86,6 +110,8 @@ class RecognizerSettingsStore(context: Context) {
             .putString(KEY_API_KEY, settings.azure.apiKey)
             .putString(KEY_SIMPLE_MODEL, settings.azure.simpleModel)
             .putString(KEY_COMPLEX_MODEL, settings.azure.complexModel)
+            .putBoolean(KEY_COST_PROTECTION, settings.azure.liveCostProtection)
+            .putInt(KEY_MAX_CALLS, clampMaxCalls(settings.azure.maxCallsPerMinute))
             .apply()
     }
 
@@ -96,5 +122,11 @@ class RecognizerSettingsStore(context: Context) {
         const val KEY_API_KEY = "azure_api_key"
         const val KEY_SIMPLE_MODEL = "azure_simple_model"
         const val KEY_COMPLEX_MODEL = "azure_complex_model"
+        const val KEY_COST_PROTECTION = "azure_live_cost_protection"
+        const val KEY_MAX_CALLS = "azure_max_calls_per_minute"
     }
 }
+
+/** 把上限夾在可調範圍內，避免存到 0（等於完全不能用）或離譜的大數字。 */
+internal fun clampMaxCalls(value: Int): Int =
+    value.coerceIn(MIN_MAX_CALLS_PER_MINUTE, MAX_MAX_CALLS_PER_MINUTE)

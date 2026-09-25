@@ -20,8 +20,6 @@ private const val TAG = "AzureFoundryRecognizer"
 /** 送去 Azure 前先把圖片縮到這個邊長以內，省流量也省 token，辨識品質影響很小。 */
 private const val MAX_UPLOAD_EDGE = 768
 
-/** 每分鐘最多幾次 Azure 呼叫。安全網，正常手動操作碰不到這個上限。 */
-private const val MAX_CALLS_PER_MINUTE = 20
 
 /** 測試連線的結果：哪個模型、成功或失敗在哪。 */
 data class ConnectionTestResult(val model: String, val result: RecognitionResult)
@@ -40,7 +38,7 @@ data class ConnectionTestResult(val model: String, val result: RecognitionResult
  */
 class AzureFoundryRecognizer(
     private val settings: AzureSettings,
-    private val rateLimiter: RateLimiter = RateLimiter(MAX_CALLS_PER_MINUTE, 60_000L),
+    private val rateLimiter: RateLimiter = RateLimiter(settings.maxCallsPerMinute, 60_000L),
 ) : Recognizer {
 
     override val displayName = "Azure AI Foundry"
@@ -57,7 +55,7 @@ class AzureFoundryRecognizer(
         if (!rateLimiter.tryAcquire()) {
             return RecognitionResult.Failure(
                 FailureReason.RATE_LIMITED,
-                "已達每分鐘 $MAX_CALLS_PER_MINUTE 次的呼叫上限（App 內建的安全限制）",
+                "已達每分鐘 ${rateLimiter.maxCalls} 次的呼叫上限（可以在「辨識」設定裡調高）",
             )
         }
         return postChatCompletion(

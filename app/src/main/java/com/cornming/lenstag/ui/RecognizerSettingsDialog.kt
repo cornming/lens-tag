@@ -11,6 +11,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -19,6 +21,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -27,6 +30,8 @@ import androidx.compose.ui.unit.sp
 import com.cornming.lenstag.recognize.AzureFoundryRecognizer
 import com.cornming.lenstag.recognize.AzureSettings
 import com.cornming.lenstag.recognize.ConnectionTestResult
+import com.cornming.lenstag.recognize.MAX_MAX_CALLS_PER_MINUTE
+import com.cornming.lenstag.recognize.MIN_MAX_CALLS_PER_MINUTE
 import com.cornming.lenstag.recognize.RecognitionResult
 import com.cornming.lenstag.recognize.RecognizerKind
 import com.cornming.lenstag.recognize.RecognizerSettings
@@ -46,6 +51,8 @@ fun RecognizerSettingsDialog(
     var apiKey by remember { mutableStateOf(initial.azure.apiKey) }
     var simpleModel by remember { mutableStateOf(initial.azure.simpleModel) }
     var complexModel by remember { mutableStateOf(initial.azure.complexModel) }
+    var costProtection by remember { mutableStateOf(initial.azure.liveCostProtection) }
+    var maxCalls by remember { mutableStateOf(initial.azure.maxCallsPerMinute.toFloat()) }
 
     val scope = rememberCoroutineScope()
     var testing by remember { mutableStateOf(false) }
@@ -56,6 +63,8 @@ fun RecognizerSettingsDialog(
         apiKey = apiKey.trim(),
         simpleModel = simpleModel.trim(),
         complexModel = complexModel.trim(),
+        liveCostProtection = costProtection,
+        maxCallsPerMinute = maxCalls.toInt(),
     )
 
     AlertDialog(
@@ -133,6 +142,42 @@ fun RecognizerSettingsDialog(
                         Text(
                             "注意：如果端點是 Azure OpenAI 形式（模型綁在網址的 deployment 裡），" +
                                 "兩個模型欄位不會有分流效果，要用 Foundry Models 形式的端點才有。",
+                            fontSize = 11.sp,
+                        )
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text("成本保護", modifier = Modifier.weight(1f))
+                            Switch(checked = costProtection, onCheckedChange = { costProtection = it })
+                        }
+                        Text(
+                            if (costProtection) {
+                                "開：即時模式不會自動送 Azure，要點框才送。每一次付費呼叫都是你按下去的。"
+                            } else {
+                                "關：即時模式物件一穩定就自動送 Azure，體驗比較流暢，但拿著手機走一圈" +
+                                    "可能就是幾十次付費呼叫。拍照模式不受這個開關影響（本來就是手動）。"
+                            },
+                            fontSize = 11.sp,
+                        )
+
+                        Text("安全上限：每分鐘最多 ${maxCalls.toInt()} 次", fontSize = 13.sp)
+                        Slider(
+                            value = maxCalls,
+                            onValueChange = { maxCalls = it },
+                            valueRange = MIN_MAX_CALLS_PER_MINUTE.toFloat()..MAX_MAX_CALLS_PER_MINUTE.toFloat(),
+                            // 每 5 次一格：(120 - 10) / 5 = 22 段，中間點有 21 個
+                            steps = (MAX_MAX_CALLS_PER_MINUTE - MIN_MAX_CALLS_PER_MINUTE) / 5 - 1,
+                        )
+                        Text(
+                            "不管成本保護開不開都有效——它防的是程式出錯狂打 API。" +
+                                if (!costProtection && maxCalls.toInt() <= 20) {
+                                    "\n成本保護關掉後，每分鐘 ${maxCalls.toInt()} 次可能不夠用，" +
+                                        "常看到「⚠ 已達上限」的話把它調高。"
+                                } else {
+                                    ""
+                                },
                             fontSize = 11.sp,
                         )
 

@@ -39,6 +39,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -151,7 +152,11 @@ fun CameraScreen() {
     var editingRecognizer by remember { mutableStateOf(false) }
     // 限流器放在畫面層保存，不跟著 recognizer 重建——不然每改一次設定計數就歸零，
     // 等於改一下設定就能繞過上限
-    val azureRateLimiter = remember { RateLimiter(maxCalls = 20, windowMs = 60_000L) }
+    val azureRateLimiter = remember {
+        RateLimiter(maxCalls = recognizerSettings.azure.maxCallsPerMinute, windowMs = 60_000L)
+    }
+    // 設定裡的上限一改就同步到同一個限流器上（只改上限、不歸零計數）
+    SideEffect { azureRateLimiter.maxCalls = recognizerSettings.azure.maxCallsPerMinute }
     val recognizer: Recognizer = remember(recognizerSettings) {
         when (recognizerSettings.kind) {
             RecognizerKind.ON_DEVICE -> OnDeviceRecognizer()
@@ -506,7 +511,7 @@ fun CameraScreen() {
                                 // 一律先存下裁切圖；要不要自動送辨識看辨識方式——
                                 // 付費的 Azure 不自動送，等使用者點框才送。
                                 liveCrops[id] = cropped
-                                if (recognizerSettings.kind.autoRecognizeLive) {
+                                if (recognizerSettings.shouldAutoRecognizeLive()) {
                                     recognizeLive(id)
                                 }
                             },

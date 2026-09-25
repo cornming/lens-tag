@@ -1,5 +1,6 @@
 package com.cornming.lenstag.recognize
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -32,6 +33,20 @@ class RateLimiterTest {
     }
 
     @Test
+    fun `changing the limit takes effect immediately without resetting the count`() {
+        // 使用者拖滑桿調上限時不重建限流器，不然計數歸零等於改設定就能繞過上限
+        val limiter = limiter(maxCalls = 5, windowMs = 60_000L)
+        repeat(3) { assertTrue(limiter.tryAcquire()) }
+
+        limiter.maxCalls = 3 // 調低到剛好等於已用掉的次數
+        assertFalse(limiter.tryAcquire())
+
+        limiter.maxCalls = 4 // 再調高一格，馬上多出一次額度
+        assertTrue(limiter.tryAcquire())
+        assertFalse(limiter.tryAcquire())
+    }
+
+    @Test
     fun `quota frees up as old calls slide out of the window`() {
         val limiter = limiter(maxCalls = 2, windowMs = 1_000L)
         fakeNow = 0L
@@ -46,17 +61,36 @@ class RateLimiterTest {
     }
 }
 
-class RecognizerKindTest {
+class CostProtectionTest {
 
     @Test
-    fun `free on-device recognition keeps auto-recognizing in live mode`() {
-        assertTrue(RecognizerKind.ON_DEVICE.autoRecognizeLive)
+    fun `free on-device recognition always auto-recognizes in live mode`() {
+        // 成本保護只跟付費的 Azure 有關，手機內建 AI 不受開關影響
+        val withProtection = RecognizerSettings(RecognizerKind.ON_DEVICE, AzureSettings(liveCostProtection = true))
+        val withoutProtection = RecognizerSettings(RecognizerKind.ON_DEVICE, AzureSettings(liveCostProtection = false))
+        assertTrue(withProtection.shouldAutoRecognizeLive())
+        assertTrue(withoutProtection.shouldAutoRecognizeLive())
     }
 
     @Test
-    fun `paid Azure recognition never auto-fires in live mode`() {
-        // 這條是成本保護的核心：即時模式每個新追蹤 ID 都會觸發，
-        // Azure 自動辨識的話拿著手機走一圈就是幾十次付費呼叫
-        assertFalse(RecognizerKind.AZURE.autoRecognizeLive)
+    fun `cost protection is on by default, so Azure never auto-fires out of the box`() {
+        // 預設值很重要：新使用者設好 Azure 之後，不該在不知情的情況下開始自動燒錢
+        assertTrue(AzureSettings().liveCostProtection)
+        assertFalse(RecognizerSettings(RecognizerKind.AZURE).shouldAutoRecognizeLive())
+    }
+
+    @Test
+    fun `turning cost protection off lets Azure auto-recognize in live mode`() {
+        val settings = RecognizerSettings(RecognizerKind.AZURE, AzureSettings(liveCostProtection = false))
+        assertTrue(settings.shouldAutoRecognizeLive())
+    }
+
+    @Test
+    fun `stored call limits are clamped to the adjustable range`() {
+        assertEquals(DEFAULT_MAX_CALLS_PER_MINUTE, AzureSettings().maxCallsPerMinute)
+        assertEquals(MIN_MAX_CALLS_PER_MINUTE, clampMaxCalls(0)) // 0 等於完全不能用
+        assertEquals(MIN_MAX_CALLS_PER_MINUTE, clampMaxCalls(-5))
+        assertEquals(MAX_MAX_CALLS_PER_MINUTE, clampMaxCalls(99_999))
+        assertEquals(60, clampMaxCalls(60))
     }
 }

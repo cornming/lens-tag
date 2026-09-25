@@ -10,10 +10,17 @@ package com.cornming.lenstag.recognize
  * 時間來源可注入，方便用假時鐘寫測試，不用真的等一分鐘。
  */
 class RateLimiter(
-    private val maxCalls: Int,
+    maxCalls: Int,
     private val windowMs: Long,
     private val now: () -> Long = System::currentTimeMillis,
 ) {
+    /**
+     * 上限可以即時調整（使用者在設定裡拖滑桿），不需要重建限流器——
+     * 重建的話計數會歸零，等於改一下設定就能繞過上限。
+     */
+    @Volatile
+    var maxCalls: Int = maxCalls
+
     private val timestamps = ArrayDeque<Long>()
 
     /** 還有額度就記一筆並回 true；已經用完回 false，不記錄。 */
